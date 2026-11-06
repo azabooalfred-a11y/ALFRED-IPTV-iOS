@@ -35,9 +35,12 @@ struct Tile: View {
 struct HomeView: View {
     @EnvironmentObject var store: Store
     @State private var openLive = false
+    @State private var openMovies = false
+    @State private var openSeries = false
+    @State private var openSettings = false
+    @State private var update: UpdateInfo?
     @State private var showPlaylists = false
     @State private var showAccount = false
-    @State private var soon: String?
     @State private var toast: String?
 
     var body: some View {
@@ -64,23 +67,27 @@ struct HomeView: View {
                     }
                     .transition(.opacity)
                 }
+                if let u = update { UpdateBox(info: u) { update = nil } }
             }
         }
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(isPresented: $openLive) { LiveView() }
+        .navigationDestination(isPresented: $openMovies) { MediaView(kind: .movie) }
+        .navigationDestination(isPresented: $openSeries) { MediaView(kind: .series) }
+        .navigationDestination(isPresented: $openSettings) { SettingsView() }
         .sheet(isPresented: $showPlaylists) { PlaylistsView().environmentObject(store) }
         .alert("Account", isPresented: $showAccount) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(accountText)
         }
-        .alert(soon ?? "", isPresented: Binding(get: { soon != nil }, set: { if !$0 { soon = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Coming in the next update.")
-        }
         .task(id: store.reloadToken) {
             if store.account == nil { await store.refreshAccount() }
+        }
+        .task {
+            guard !Updater.checkedThisLaunch else { return }
+            Updater.checkedThisLaunch = true
+            update = await Updater.check()
         }
     }
 
@@ -93,9 +100,9 @@ struct HomeView: View {
     }
 
     private var live: some View { Tile(title: "Live TV", icon: "tv", colors: T.live, big: true) { openLive = true } }
-    private var movies: some View { Tile(title: "Movies", icon: "play.circle", colors: T.movies) { soon = "Movies" } }
-    private var series: some View { Tile(title: "Series", icon: "film", colors: T.series) { soon = "Series" } }
-    private var settings: some View { Tile(title: "Settings", icon: "gearshape.fill", colors: T.settings) { soon = "Settings" } }
+    private var movies: some View { Tile(title: "Movies", icon: "play.circle", colors: T.movies) { openMovies = true } }
+    private var series: some View { Tile(title: "Series", icon: "film", colors: T.series) { openSeries = true } }
+    private var settings: some View { Tile(title: "Settings", icon: "gearshape.fill", colors: T.settings) { openSettings = true } }
     private var reload: some View { Tile(title: "Reload", icon: "arrow.clockwise", colors: T.reload) { doReload() } }
 
     private var pills: some View {

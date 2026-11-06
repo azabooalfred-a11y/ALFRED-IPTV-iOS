@@ -12,7 +12,7 @@ struct Playlist: Codable, Identifiable, Equatable {
     var isM3u: Bool { !m3u.isEmpty }
 }
 
-/// Saved playlists, the one in use, favorites and account info.
+/// Saved playlists, the one in use, favorites, history, hidden / locked categories and account info.
 @MainActor
 final class Store: ObservableObject {
     @Published private(set) var playlists: [Playlist] = []
@@ -20,6 +20,12 @@ final class Store: ObservableObject {
     @Published var account: AccountInfo?
     @Published private(set) var reloadToken = UUID()
     @Published private var favs: [String: Set<String>] = [:]
+    @Published private var history: [String: [String]] = [:]
+    @Published private var hidden: [String: Set<String>] = [:]
+    @Published private var locked: [String: Set<String>] = [:]
+    @Published private(set) var pin: String = ""
+    /// PIN entered this session: locked categories open.
+    @Published var unlocked = false
 
     private let d = UserDefaults.standard
 
@@ -29,9 +35,19 @@ final class Store: ObservableObject {
             playlists = list
         }
         currentIndex = d.object(forKey: "current") as? Int ?? -1
-        if let raw = d.dictionary(forKey: "favs") as? [String: [String]] {
-            favs = raw.mapValues { Set($0) }
-        }
+        favs = Store.loadSets(d, "favs")
+        hidden = Store.loadSets(d, "hidden")
+        locked = Store.loadSets(d, "locked")
+        history = d.dictionary(forKey: "history") as? [String: [String]] ?? [:]
+        pin = d.string(forKey: "pin") ?? ""
+    }
+
+    private static func loadSets(_ d: UserDefaults, _ key: String) -> [String: Set<String>] {
+        (d.dictionary(forKey: key) as? [String: [String]] ?? [:]).mapValues { Set($0) }
+    }
+
+    private func saveSets(_ v: [String: Set<String>], _ key: String) {
+        d.set(v.mapValues { Array($0) }, forKey: key)
     }
 
     var current: Playlist? {
@@ -39,6 +55,8 @@ final class Store: ObservableObject {
     }
 
     var api: Xtream? { current.map { Xtream(playlist: $0) } }
+
+    private var pid: String { current?.id.uuidString ?? "" }
 
     private func save() {
         d.set(try? JSONEncoder().encode(playlists), forKey: "playlists")
@@ -59,29 +77,32 @@ final class Store: ObservableObject {
             currentIndex = playlists.count - 1
         }
         save()
-        reload()
+        reload(fresh: false)
         self.account = account
     }
 
     func select(_ i: Int) {
         currentIndex = i
         save()
-        reload()
+        reload(fresh: false)
     }
 
     func remove(_ i: Int) {
         guard playlists.indices.contains(i) else { return }
         let gone = playlists.remove(at: i)
-        favs[gone.id.uuidString] = nil
+        let gid = gone.id.uuidString
+        for k in favs.keys where k.hasPrefix(gid) { favs[k] = nil }
+        favs[gid] = nil
+        saveSets(favs, "favs")
         if currentIndex == i { currentIndex = -1 } else if currentIndex > i { currentIndex -= 1 }
         save()
-        saveFavs()
-        reload()
+        reload(fresh: false)
     }
 
-    /// Fresh lists from the server.
-    func reload() {
+    /// Reload: fresh lists from the server (fresh = also forget the lists saved on the phone).
+    func reload(fresh: Bool = true) {
         Xtream.clearCache()
+        if fresh { Xtream.clearDisk() }
         EpgCache.shared.clear()
         account = nil
         reloadToken = UUID()
@@ -92,27 +113,118 @@ final class Store: ObservableObject {
         if let a = try? await api.login() { account = a }
     }
 
-    // MARK: favorites
+    // MARK: favorites (live channels use the channel id; movies / series use "movie:id" / "series:id")
 
-    func isFav(_ c: Channel) -> Bool {
-        guard let p = current else { return false }
-        return favs[p.id.uuidString]?.contains(c.id) ?? false
-    }
+    func isFav(_ key: String) -> Bool { favs[pid]?.contains(key) ?? false }
+    func isFav(_ c: Channel) -> Bool { isFav(c.id) }
 
     func favCount(in list: [Channel]) -> Int {
-        guard let p = current, let set = favs[p.id.uuidString] else { return 0 }
+        guard let set = favs[pid] else { return 0 }
         return list.reduce(0) { $0 + (set.contains($1.id) ? 1 : 0) }
     }
 
-    func toggleFav(_ c: Channel) {
-        guard let p = current else { return }
-        var set = favs[p.id.uuidString] ?? []
-        if set.contains(c.id) { set.remove(c.id) } else { set.insert(c.id) }
-        favs[p.id.uuidString] = set
-        saveFavs()
+    func toggleFav(_ key: String) {
+        guard current != nil else { return }
+        var set = favs[pid] ?? []
+        if set.contains(key) { set.remove(key) } else { set.insert(key) }
+        favs[pid] = set
+        saveSets(favs, "favs")
     }
 
-    private func saveFavs() {
-        d.set(favs.mapValues { Array($0) }, forKey: "favs")
+    func toggleFav(_ c: Channel) { toggleFav(c.id) }
+
+    // MARK: history ("live", "movie", "series")
+
+    func addHistory(_ kind: String, _ id: String) {
+        let k = pid + kind
+        var l = history[k] ?? []
+        l.removeAll { $0 == id }
+        l.insert(id, at: 0)
+        history[k] = Array(l.prefix(30))
+        d.set(history, forKey: "history")
+    }
+
+    func historyIds(_ kind: String) -> [String] { history[pid + kind] ?? [] }
+
+    var historyCount: Int {
+        ["live", "movie", "series"].reduce(0) { $0 + (history[pid + $1]?.count ?? 0) }
+    }
+
+    func clearHistory() {
+        for k in ["live", "movie", "series"] { history[pid + k] = nil }
+        d.set(history, forKey: "history")
+    }
+
+    // MARK: hidden / locked categories ("live", "movie", "series")
+
+    func hiddenSet(_ kind: String) -> Set<String> { hidden[pid + kind] ?? [] }
+
+    func setHidden(_ kind: String, _ s: Set<String>) {
+        hidden[pid + kind] = s
+        saveSets(hidden, "hidden")
+    }
+
+    var hiddenCount: Int { ["live", "movie", "series"].reduce(0) { $0 + hiddenSet($1).count } }
+
+    func lockedSet(_ kind: String) -> Set<String> { locked[pid + kind] ?? [] }
+
+    func setLocked(_ kind: String, _ s: Set<String>) {
+        locked[pid + kind] = s
+        saveSets(locked, "locked")
+    }
+
+    var parentalOn: Bool { !pin.isEmpty }
+
+    /// Locked and the PIN not entered yet this session.
+    func isLocked(_ kind: String, _ catId: String) -> Bool {
+        parentalOn && !unlocked && lockedSet(kind).contains(catId)
+    }
+
+    func checkPin(_ p: String) -> Bool { !pin.isEmpty && p == pin }
+
+    func setPin(_ p: String) {
+        pin = p
+        d.set(p, forKey: "pin")
+        unlocked = false
+    }
+}
+
+/// Asks for the parental PIN, then runs `onOK`.
+struct PinPrompt: ViewModifier {
+    @EnvironmentObject var store: Store
+    @Binding var show: Bool
+    var message = "This category is locked."
+    var onOK: () -> Void
+    @State private var pin = ""
+    @State private var wrong = false
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Enter PIN", isPresented: $show) {
+                SecureField("PIN", text: $pin).keyboardType(.numberPad)
+                Button("Cancel", role: .cancel) { pin = "" }
+                Button("OK") {
+                    if store.checkPin(pin) {
+                        store.unlocked = true
+                        onOK()
+                    } else {
+                        wrong = true
+                    }
+                    pin = ""
+                }
+            } message: {
+                Text(message)
+            }
+            .background(
+                Color.clear.alert("Wrong PIN", isPresented: $wrong) {
+                    Button("OK", role: .cancel) {}
+                }
+            )
+    }
+}
+
+extension View {
+    func pinPrompt(_ show: Binding<Bool>, message: String = "This category is locked.", onOK: @escaping () -> Void) -> some View {
+        modifier(PinPrompt(show: show, message: message, onOK: onOK))
     }
 }

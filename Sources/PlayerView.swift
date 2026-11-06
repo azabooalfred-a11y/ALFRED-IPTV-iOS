@@ -1,12 +1,30 @@
 import SwiftUI
 import UIKit
 
+/// Something the player can play: a live channel, a movie or an episode.
+struct PlayItem: Identifiable {
+    let id: String
+    let num: Int
+    let title: String
+    let icon: String
+    let url: URL?
+    var channel: Channel? = nil
+}
+
+struct PlayRequest: Identifiable {
+    let id = UUID()
+    let items: [PlayItem]
+    let index: Int
+    let live: Bool
+}
+
 /// Full screen player — sample B: floating glass bar, brightness (left) and volume (right) bars.
 struct PlayerView: View {
     @EnvironmentObject var store: Store
     @Environment(\.dismiss) private var dismiss
 
-    let list: [Channel]
+    let list: [PlayItem]
+    let live: Bool
     @State private var index: Int
     @StateObject private var engine = PlayerEngine()
     @State private var controls = true
@@ -18,13 +36,15 @@ struct PlayerView: View {
     @State private var now = ""
     @State private var next = ""
     @State private var wasPortrait = true
+    @State private var scrub: Double?
 
-    init(list: [Channel], index: Int) {
-        self.list = list
-        _index = State(initialValue: index)
+    init(request: PlayRequest) {
+        list = request.items
+        live = request.live
+        _index = State(initialValue: request.index)
     }
 
-    private var ch: Channel { list[index] }
+    private var item: PlayItem { list[index] }
 
     var body: some View {
         GeometryReader { g in
@@ -38,7 +58,7 @@ struct PlayerView: View {
                 if engine.failed {
                     VStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle").font(.system(size: 30))
-                        Text("This channel isn't working right now.")
+                        Text(live ? "This channel isn't working right now." : "This video isn't working right now.")
                         Pill(icon: "arrow.clockwise", title: "Try again") { start() }
                     }
                     .foregroundColor(.white)
@@ -137,32 +157,50 @@ struct PlayerView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 12) {
-            LogoImage(url: ch.icon).frame(width: 46, height: 34)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(ch.num) · \(ch.name)")
-                    .font(.system(size: 15, weight: .heavy))
-                    .lineLimit(1)
-                Text(epgLine)
-                    .font(.system(size: 12))
-                    .foregroundColor(Color(hex: 0xCFD6FF))
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            HStack(spacing: 8) {
-                CircleButton(icon: "backward.end.fill", size: 40) { change(-1) }
-                CircleButton(icon: engine.playing ? "pause.fill" : "play.fill", size: 40, filled: true) {
-                    engine.toggle()
-                    bumpHide()
+        VStack(spacing: 8) {
+            if !live { seekBar }
+            HStack(spacing: 12) {
+                LogoImage(url: item.icon).frame(width: 46, height: 34)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(live ? "\(item.num) · \(item.title)" : item.title)
+                        .font(.system(size: 15, weight: .heavy))
+                        .lineLimit(1)
+                    Text(subLine)
+                        .font(.system(size: 12))
+                        .foregroundColor(Color(hex: 0xCFD6FF))
+                        .lineLimit(1)
                 }
-                CircleButton(icon: "forward.end.fill", size: 40) { change(1) }
-                CircleButton(icon: store.isFav(ch) ? "heart.fill" : "heart", size: 40) {
-                    store.toggleFav(ch)
-                    bumpHide()
-                }
-                CircleButton(icon: "list.bullet", size: 40) {
-                    hideTask?.cancel()
-                    withAnimation { showList = true; controls = false }
+                Spacer(minLength: 8)
+                HStack(spacing: 8) {
+                    if live {
+                        CircleButton(icon: "backward.end.fill", size: 40) { change(-1) }
+                    } else {
+                        CircleButton(icon: "gobackward.10", size: 40) { engine.jump(-10); bumpHide() }
+                    }
+                    CircleButton(icon: engine.playing ? "pause.fill" : "play.fill", size: 40, filled: true) {
+                        engine.toggle()
+                        bumpHide()
+                    }
+                    if live {
+                        CircleButton(icon: "forward.end.fill", size: 40) { change(1) }
+                        if let c = item.channel {
+                            CircleButton(icon: store.isFav(c) ? "heart.fill" : "heart", size: 40) {
+                                store.toggleFav(c)
+                                bumpHide()
+                            }
+                        }
+                    } else {
+                        CircleButton(icon: "goforward.10", size: 40) { engine.jump(10); bumpHide() }
+                        if list.count > 1 && index + 1 < list.count {
+                            CircleButton(icon: "forward.end.fill", size: 40) { change(1) }
+                        }
+                    }
+                    if list.count > 1 {
+                        CircleButton(icon: "list.bullet", size: 40) {
+                            hideTask?.cancel()
+                            withAnimation { showList = true; controls = false }
+                        }
+                    }
                 }
             }
         }
@@ -174,7 +212,36 @@ struct PlayerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 20))
     }
 
-    private var epgLine: String {
+    private var seekBar: some View {
+        let len = Double(engine.length)
+        let pos = len > 0 ? Double(engine.time) / len : 0
+        return HStack(spacing: 10) {
+            Text(PlayerView.clock(scrub.map { $0 * len } ?? Double(engine.time)))
+                .font(.system(size: 11).monospacedDigit())
+            Slider(value: Binding(get: { scrub ?? pos }, set: { scrub = $0 }), in: 0...1) { editing in
+                if editing {
+                    hideTask?.cancel()
+                } else {
+                    if let s = scrub { engine.seek(s) }
+                    scrub = nil
+                    bumpHide()
+                }
+            }
+            .tint(T.cyan)
+            .disabled(len <= 0)
+            Text(PlayerView.clock(len))
+                .font(.system(size: 11).monospacedDigit())
+        }
+    }
+
+    static func clock(_ ms: Double) -> String {
+        let t = max(0, Int(ms / 1000))
+        let h = t / 3600, m = (t % 3600) / 60, s = t % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
+    private var subLine: String {
+        if !live { return list.count > 1 ? "\(index + 1) of \(list.count)" : "Movie" }
         if now.isEmpty { return "Live" }
         return next.isEmpty ? "Now: \(now)" : "Now: \(now) · Next: \(next)"
     }
@@ -183,7 +250,7 @@ struct PlayerView: View {
         HStack(spacing: 0) {
             Spacer()
             VStack(alignment: .leading, spacing: 6) {
-                Text("Channels").font(.system(size: 15, weight: .heavy)).padding(.horizontal, 6)
+                Text(live ? "Channels" : "Episodes").font(.system(size: 15, weight: .heavy)).padding(.horizontal, 6)
                 ScrollViewReader { proxy in
                     ScrollView(showsIndicators: false) {
                         LazyVStack(spacing: 2) {
@@ -191,8 +258,8 @@ struct PlayerView: View {
                                 HStack(spacing: 8) {
                                     Text("\(list[i].num)").font(.system(size: 11)).foregroundColor(Color(hex: 0xCFD6FF))
                                         .frame(width: 30, alignment: .leading)
-                                    LogoImage(url: list[i].icon).frame(width: 30, height: 22)
-                                    Text(list[i].name).font(.system(size: 13)).lineLimit(1)
+                                    if live { LogoImage(url: list[i].icon).frame(width: 30, height: 22) }
+                                    Text(list[i].title).font(.system(size: 13)).lineLimit(1)
                                     Spacer()
                                 }
                                 .padding(.vertical, 7).padding(.horizontal, 8)
@@ -223,14 +290,15 @@ struct PlayerView: View {
 
     private func start() {
         engine.setVolume(Int(vol * 100))
-        engine.play(store.api?.liveURL(ch))
+        engine.play(item.url)
         now = ""
         next = ""
-        let c = ch
+        guard live, let c = item.channel else { return }
+        store.addHistory("live", c.id)
         Task {
             guard let api = store.api else { return }
             let p = await EpgCache.shared.programs(api, c)
-            if c.id == ch.id {
+            if c.id == item.channel?.id {
                 now = p.first?.title ?? ""
                 next = p.count > 1 ? p[1].title : ""
             }
@@ -258,7 +326,7 @@ struct PlayerView: View {
         withAnimation { controls = true }
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if !Task.isCancelled && !showList {
+            if !Task.isCancelled && !showList && scrub == nil {
                 withAnimation { controls = false }
             }
         }

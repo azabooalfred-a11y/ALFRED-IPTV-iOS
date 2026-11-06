@@ -8,6 +8,9 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published var playing = false
     @Published var buffering = false
     @Published var failed = false
+    /// Position and length in milliseconds (movies / episodes).
+    @Published var time: Int32 = 0
+    @Published var length: Int32 = 0
     private var volume: Int32 = 100
 
     override init() {
@@ -22,6 +25,8 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         }
         failed = false
         buffering = true
+        time = 0
+        length = 0
         let media = VLCMedia(url: url)
         media.addOptions([
             "network-caching": 1500,
@@ -40,6 +45,14 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func toggle() {
         if player.isPlaying { player.pause() } else { player.play() }
+    }
+
+    func seek(_ fraction: Double) {
+        player.position = Float(max(0, min(1, fraction)))
+    }
+
+    func jump(_ seconds: Int32) {
+        if seconds >= 0 { player.jumpForward(seconds) } else { player.jumpBackward(-seconds) }
     }
 
     func setVolume(_ v: Int) {
@@ -70,7 +83,11 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func mediaPlayerTimeChanged(_ aNotification: Notification) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.buffering else { return }
+            guard let self else { return }
+            self.time = self.player.time.intValue
+            let len = self.player.media?.length.intValue ?? 0
+            if len != self.length { self.length = len }
+            guard self.buffering else { return }
             self.buffering = false
             self.playing = true
             self.player.audio?.volume = self.volume

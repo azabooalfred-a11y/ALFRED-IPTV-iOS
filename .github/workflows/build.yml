@@ -21,7 +21,8 @@ jobs:
           set +e
           xcodebuild -workspace ALFREDIPTV.xcworkspace -scheme ALFREDIPTV -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} build > build.log 2>&1
           code=$?
           tail -40 build.log
           if [ $code -ne 0 ]; then
@@ -34,6 +35,9 @@ jobs:
           cp -R "build/Build/Products/Release-iphoneos/ALFRED-IPTV.app" Payload/
           zip -qry ALFRED-IPTV.ipa Payload
           ls -lh ALFRED-IPTV.ipa
+          VER=$(grep MARKETING_VERSION project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          python3 -c 'import json,sys; notes=[l.strip() for l in open("RELEASE_NOTES.txt") if l.strip()]; json.dump({"version":sys.argv[1],"build":int(sys.argv[2]),"notes":notes}, open("version.json","w"))' "$VER" "${{ github.run_number }}"
+          cat version.json
       - uses: actions/upload-artifact@v4
         with:
           name: ALFRED-IPTV-ipa
@@ -43,5 +47,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest -y --cleanup-tag || true
-          gh release create latest ALFRED-IPTV.ipa --title "ALFRED-IPTV for iPhone (latest)" \
+          gh release create latest ALFRED-IPTV.ipa version.json --title "ALFRED-IPTV for iPhone (latest)" \
             --notes "Unsigned IPA. Sideload with Sideloadly or AltStore."

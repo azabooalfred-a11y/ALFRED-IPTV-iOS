@@ -1,11 +1,5 @@
 import SwiftUI
 
-struct PlayRequest: Identifiable {
-    let id = UUID()
-    let list: [Channel]
-    let index: Int
-}
-
 struct ChannelRow: View {
     @EnvironmentObject var store: Store
     let ch: Channel
@@ -70,19 +64,42 @@ struct LiveView: View {
     @State private var selNow = ""
     @State private var playing: PlayRequest?
     @State private var isLand = false
+    @State private var askPin = false
+    @State private var pendingCat: String?
     @StateObject private var preview = PlayerEngine()
+    @AppStorage("liveCatSort") private var catSort = 0
+    @AppStorage("liveChSort") private var chSort = 0
 
     private var allCats: [Category] {
-        [Category(id: "all", name: "All Channels"), Category(id: "fav", name: "Favorites")] + cats
+        let hid = store.hiddenSet("live")
+        return [Category(id: "all", name: "All Channels"), Category(id: "fav", name: "Favorites"),
+                Category(id: "recent", name: "Recently Watched")]
+            + Sorts.cats(cats.filter { !hid.contains($0.id) }, catSort)
+    }
+
+    private func pick(_ id: String) {
+        if store.isLocked("live", id) {
+            pendingCat = id
+            askPin = true
+        } else {
+            cat = id
+        }
     }
 
     private func filtered() -> [Channel] {
+        let hid = store.hiddenSet("live")
+        let lock = store.parentalOn && !store.unlocked ? store.lockedSet("live") : []
+        let visible = chans.filter { !hid.contains($0.categoryId) && !lock.contains($0.categoryId) }
         var l: [Channel]
         switch cat {
-        case "all": l = chans
-        case "fav": l = chans.filter { store.isFav($0) }
+        case "all": l = visible
+        case "fav": l = visible.filter { store.isFav($0) }
+        case "recent":
+            let byId = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            l = store.historyIds("live").compactMap { byId[$0] }
         default: l = chans.filter { $0.categoryId == cat }
         }
+        if cat != "recent" { l = Sorts.chans(l, chSort) }
         let q = qCh.trimmed
         if !q.isEmpty { l = l.filter { $0.name.localizedCaseInsensitiveContains(q) } }
         return l
@@ -129,8 +146,9 @@ struct LiveView: View {
         .fullScreenCover(item: $playing, onDismiss: {
             if isLand, let s = selected { preview.play(store.api?.liveURL(s)) }
         }) { r in
-            PlayerView(list: r.list, index: r.index).environmentObject(store)
+            PlayerView(request: r).environmentObject(store)
         }
+        .pinPrompt($askPin) { if let c = pendingCat { cat = c } }
     }
 
     private var header: some View {
@@ -152,8 +170,8 @@ struct LiveView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(allCats) { c in
-                        Button { cat = c.id } label: {
-                            Text(c.name)
+                        Button { pick(c.id) } label: {
+                            Text((store.isLocked("live", c.id) ? "🔒 " : "") + c.name)
                                 .font(.system(size: 13, weight: cat == c.id ? .bold : .regular))
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 13).padding(.vertical, 7)
@@ -166,7 +184,7 @@ struct LiveView: View {
             }
             channelList(list, showEpg: true, empty: "No channels here") { i in
                 preview.stop()
-                playing = PlayRequest(list: list, index: i)
+                playing = request(list, i)
             }
         }
         .onAppear { preview.stop() }
@@ -183,9 +201,9 @@ struct LiveView: View {
                         let q = qCat.trimmed
                         ForEach(allCats.filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }) { c in
                             HStack {
-                                Text(c.name).font(.system(size: 13)).lineLimit(1)
+                                Text((store.isLocked("live", c.id) ? "🔒 " : "") + c.name).font(.system(size: 13)).lineLimit(1)
                                 Spacer()
-                                Text("\(c.id == "fav" ? store.favCount(in: chans) : counts[c.id] ?? 0)")
+                                Text(countText(c.id))
                                     .font(.system(size: 11)).foregroundColor(T.dim)
                             }
                             .foregroundColor(.white)
@@ -196,7 +214,7 @@ struct LiveView: View {
                             }
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .contentShape(Rectangle())
-                            .onTapGesture { cat = c.id }
+                            .onTapGesture { pick(c.id) }
                         }
                     }
                 }
@@ -209,7 +227,7 @@ struct LiveView: View {
                     let ch = list[i]
                     if selected?.id == ch.id {
                         preview.stop()
-                        playing = PlayRequest(list: list, index: i)
+                        playing = request(list, i)
                     } else {
                         select(ch)
                     }
@@ -312,9 +330,25 @@ struct LiveView: View {
         guard let s = selected else { return }
         preview.stop()
         if let i = list.firstIndex(where: { $0.id == s.id }) {
-            playing = PlayRequest(list: list, index: i)
+            playing = request(list, i)
         } else {
-            playing = PlayRequest(list: [s], index: 0)
+            playing = request([s], 0)
+        }
+    }
+
+    private func request(_ list: [Channel], _ i: Int) -> PlayRequest {
+        let api = store.api
+        let items = list.map { c in
+            PlayItem(id: c.id, num: c.num, title: c.name, icon: c.icon, url: api?.liveURL(c), channel: c)
+        }
+        return PlayRequest(items: items, index: i, live: true)
+    }
+
+    private func countText(_ id: String) -> String {
+        switch id {
+        case "fav": return "\(store.favCount(in: chans))"
+        case "recent": return "\(store.historyIds("live").count)"
+        default: return "\(counts[id] ?? 0)"
         }
     }
 

@@ -61,14 +61,19 @@ struct Brand: View {
 
 struct Clock: View {
     var size: CGFloat = 20
+    @AppStorage("time24") private var t24 = false
 
     var body: some View {
         TimelineView(.everyMinute) { ctx in
-            Text(ctx.date.formatted(date: .omitted, time: .shortened))
+            Text(Clock.format(ctx.date, t24))
                 .font(.system(size: size, weight: .light))
                 .foregroundColor(.white)
         }
     }
+
+    private static let f12: DateFormatter = { let f = DateFormatter(); f.dateFormat = "h:mm a"; return f }()
+    private static let f24: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm"; return f }()
+    static func format(_ d: Date, _ t24: Bool) -> String { (t24 ? f24 : f12).string(from: d) }
 }
 
 struct Press: ButtonStyle {
