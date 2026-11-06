@@ -156,8 +156,10 @@ struct LiveView: View {
             CircleButton(icon: "chevron.left", size: 36) { dismiss() }
             Image("Logo").resizable().frame(width: 30, height: 30).clipShape(RoundedRectangle(cornerRadius: 7))
             Text("Live").font(.system(size: 18, weight: .black)).foregroundColor(.white)
-            Spacer()
-            Clock(size: 16)
+            Spacer(minLength: 6)
+            LiveTitle()
+            Spacer(minLength: 6)
+            Clock(size: 16).lineLimit(1).fixedSize()
         }
         .padding(.top, 4)
     }
@@ -369,5 +371,35 @@ struct LiveView: View {
             errText = error.localizedDescription
         }
         loading = false
+    }
+}
+
+
+/// Title A (same as Android Live): ALFRED in cyan, a thin glowing line, IPTV PLAYER underneath.
+struct LiveTitle: View {
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            block(20, 8, 6)
+            block(15, 7, 4)
+            block(12, 6, 2.5)
+        }
+    }
+
+    private func block(_ big: CGFloat, _ small: CGFloat, _ spacing: CGFloat) -> some View {
+        VStack(spacing: 2) {
+            Text("ALFRED")
+                .font(.system(size: big, weight: .black))
+                .kerning(big * 0.15)
+                .foregroundColor(Color(hex: 0x00DCFF))
+            Rectangle()
+                .fill(LinearGradient(colors: [.clear, T.cyan, .clear], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 1)
+            Text("IPTV PLAYER")
+                .font(.system(size: small, weight: .medium))
+                .kerning(spacing)
+                .foregroundColor(Color(hex: 0xCFD6FF))
+        }
+        .lineLimit(1)
+        .fixedSize()
     }
 }

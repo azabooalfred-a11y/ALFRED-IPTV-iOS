@@ -7,3 +7,4 @@ Payload/
 *.ipa
 Info.plist
 get-ipa-log.txt
+send-log.txt
