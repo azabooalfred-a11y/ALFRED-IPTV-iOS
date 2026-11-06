@@ -53,11 +53,14 @@ struct ALFREDApp: App {
 
 struct RootView: View {
     @EnvironmentObject var store: Store
+    @State private var started = false
 
     var body: some View {
         NavigationStack {
             if store.current != nil {
                 HomeView()
+            } else if store.playlists.isEmpty && !started {
+                WelcomeView { withAnimation { started = true } }
             } else {
                 LoginView(canClose: false)
             }

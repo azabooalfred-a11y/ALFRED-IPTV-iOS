@@ -20,7 +20,7 @@ struct LoginView: View {
         GeometryReader { g in
             let land = isLandscape(g)
             ZStack {
-                AppBackground()
+                Wallpaper(style: .spot)
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: land ? 10 : 22) {
                         HStack(spacing: 12) {

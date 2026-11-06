@@ -47,7 +47,7 @@ struct HomeView: View {
         GeometryReader { g in
             let land = isLandscape(g)
             ZStack {
-                AppBackground()
+                Wallpaper(style: .glow)
                 if land {
                     landscape
                         .padding(.horizontal, 20)

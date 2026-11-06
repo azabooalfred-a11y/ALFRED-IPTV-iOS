@@ -1,2 +1,2 @@
-Fixed updating with SideStore
-Full-screen options in the live player
+Welcome screen
+New wallpapers on Welcome, Home and Add playlist

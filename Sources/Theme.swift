@@ -181,3 +181,22 @@ func isLandscape(_ g: GeometryProxy) -> Bool {
     _ = g.size
     return b.width > b.height
 }
+
+/// Wallpapers (same as the Android app): glow for Welcome / Home, spotlights for Add playlist.
+struct Wallpaper: View {
+    enum Style { case glow, spot }
+    var style: Style = .glow
+
+    var body: some View {
+        GeometryReader { g in
+            let land = isLandscape(g)
+            let name = (style == .glow ? "WallGlow" : "WallSpot") + (land ? "Land" : "Port")
+            Image(name)
+                .resizable()
+                .scaledToFill()
+                .frame(width: g.size.width, height: g.size.height)
+                .clipped()
+        }
+        .ignoresSafeArea()
+    }
+}
