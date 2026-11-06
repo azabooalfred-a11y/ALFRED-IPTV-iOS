@@ -11,7 +11,7 @@ struct UpdateInfo: Decodable, Identifiable {
 /// Checks GitHub for a newer build; installing goes through SideStore (or AltStore).
 enum Updater {
     static let infoURL = URL(string: "https://github.com/azabooalfred-a11y/ALFRED-IPTV-iOS/releases/download/latest/version.json")!
-    static let ipaURL = "https://github.com/azabooalfred-a11y/ALFRED-IPTV-iOS/releases/download/latest/ALFRED-IPTV.ipa"
+    static let ipaURL = "https://github.com/azabooalfred-a11y/ALFRED-IPTV-iOS/releases/download/latest/com.alfredtv.ipa"
     static var checkedThisLaunch = false
 
     static var currentBuild: Int { Int(Bundle.main.infoDictionary?["ALFREDBuild"] as? String ?? "0") ?? 0 }

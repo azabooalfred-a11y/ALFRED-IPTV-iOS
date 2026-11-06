@@ -35,6 +35,7 @@ jobs:
           cp -R "build/Build/Products/Release-iphoneos/ALFRED-IPTV.app" Payload/
           zip -qry ALFRED-IPTV.ipa Payload
           ls -lh ALFRED-IPTV.ipa
+          cp ALFRED-IPTV.ipa com.alfredtv.ipa
           VER=$(grep MARKETING_VERSION project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           python3 -c 'import json,sys; notes=[l.strip() for l in open("RELEASE_NOTES.txt") if l.strip()]; json.dump({"version":sys.argv[1],"build":int(sys.argv[2]),"notes":notes}, open("version.json","w"))' "$VER" "${{ github.run_number }}"
           cat version.json
@@ -47,5 +48,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest -y --cleanup-tag || true
-          gh release create latest ALFRED-IPTV.ipa version.json --title "ALFRED-IPTV for iPhone (latest)" \
+          gh release create latest ALFRED-IPTV.ipa com.alfredtv.ipa version.json --title "ALFRED-IPTV for iPhone (latest)" \
             --notes "Unsigned IPA. Sideload with Sideloadly or AltStore."

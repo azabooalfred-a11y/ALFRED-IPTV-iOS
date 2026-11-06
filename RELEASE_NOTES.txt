@@ -1,1 +1,2 @@
-Full-screen options in the live player (Fit, Fill screen, Stretch, 16:9, 4:3)
+Fixed updating with SideStore
+Full-screen options in the live player
