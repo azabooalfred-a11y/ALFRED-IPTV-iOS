@@ -18,7 +18,7 @@ struct LoginView: View {
 
     var body: some View {
         GeometryReader { g in
-            let land = g.size.width > g.size.height
+            let land = isLandscape(g)
             ZStack {
                 AppBackground()
                 ScrollView(showsIndicators: false) {

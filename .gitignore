@@ -6,3 +6,4 @@ build/
 Payload/
 *.ipa
 Info.plist
+get-ipa-log.txt

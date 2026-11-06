@@ -169,3 +169,10 @@ struct LogoImage: View {
 extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }
+
+/// Sideways or upright, from the screen itself (the keyboard shrinking the view must not count as "sideways").
+func isLandscape(_ g: GeometryProxy) -> Bool {
+    let b = UIScreen.main.bounds
+    _ = g.size
+    return b.width > b.height
+}
