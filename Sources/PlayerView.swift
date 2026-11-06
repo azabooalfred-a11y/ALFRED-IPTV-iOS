@@ -37,6 +37,10 @@ struct PlayerView: View {
     @State private var next = ""
     @State private var wasPortrait = true
     @State private var scrub: Double?
+    @State private var showAspect = false
+    /// Full-screen option: 0 Fit, 1 Fill screen, 2 Stretch, 3 16:9, 4 4:3 (remembered).
+    @AppStorage("aspectMode") private var aspect = 0
+    private static let aspectNames = ["Fit", "Fill screen", "Stretch", "16:9", "4:3"]
 
     init(request: PlayRequest) {
         list = request.items
@@ -50,7 +54,10 @@ struct PlayerView: View {
         GeometryReader { g in
             ZStack {
                 Color.black.ignoresSafeArea()
-                VLCVideoView(engine: engine).ignoresSafeArea()
+                let sc = scale(g)
+                VLCVideoView(engine: engine)
+                    .scaleEffect(x: sc.width, y: sc.height)
+                    .ignoresSafeArea()
 
                 if engine.buffering && !engine.failed {
                     ProgressView().tint(.white).scaleEffect(1.5)
@@ -151,8 +158,84 @@ struct PlayerView: View {
                 Spacer()
                 bottomBar
             }
-            .padding(.horizontal, 64)
+            .padding(.leading, 64)
+            .padding(.trailing, live ? 76 : 64)
             .padding(.bottom, 14)
+
+            if live { aspectButton }
+        }
+    }
+
+    // MARK: full-screen options (sample B)
+
+    private var aspectButton: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            Spacer()
+            if showAspect {
+                VStack(spacing: 2) {
+                    ForEach(PlayerView.aspectNames.indices, id: \.self) { i in
+                        Button {
+                            aspect = i
+                            withAnimation { showAspect = false }
+                            bumpHide()
+                        } label: {
+                            HStack {
+                                Text(PlayerView.aspectNames[i])
+                                Spacer()
+                                if i == aspect { Image(systemName: "checkmark") }
+                            }
+                            .font(.system(size: 14, weight: i == aspect ? .bold : .regular))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 9)
+                            .background(i == aspect ? T.accent : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                        }
+                    }
+                }
+                .padding(6)
+                .frame(width: 180)
+                .background(.ultraThinMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.12)))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottomTrailing)))
+            }
+            CircleButton(icon: "arrow.up.left.and.arrow.down.right", size: 44, filled: aspect != 0) {
+                hideTask?.cancel()
+                withAnimation(.easeOut(duration: 0.15)) { showAspect.toggle() }
+                if !showAspect { bumpHide() }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.trailing, 16)
+        .padding(.bottom, 16)
+    }
+
+    /// How much to stretch the picture (VLC draws it "fit" inside the view).
+    private func scale(_ g: GeometryProxy) -> CGSize {
+        guard live else { return CGSize(width: 1, height: 1) }
+        let full = UIScreen.main.bounds.size
+        let W = max(full.width, full.height), H = min(full.width, full.height)
+        var v = engine.videoSize
+        if v.width <= 0 || v.height <= 0 { v = CGSize(width: 16, height: 9) }
+        let s = min(W / v.width, H / v.height)
+        let fw = v.width * s, fh = v.height * s
+        func fitted(_ r: CGFloat) -> CGSize {
+            W / H > r ? CGSize(width: H * r, height: H) : CGSize(width: W, height: W / r)
+        }
+        switch aspect {
+        case 1:
+            let k = max(W / fw, H / fh)
+            return CGSize(width: k, height: k)
+        case 2:
+            return CGSize(width: W / fw, height: H / fh)
+        case 3:
+            let t = fitted(16.0 / 9.0)
+            return CGSize(width: t.width / fw, height: t.height / fh)
+        case 4:
+            let t = fitted(4.0 / 3.0)
+            return CGSize(width: t.width / fw, height: t.height / fh)
+        default:
+            return CGSize(width: 1, height: 1)
         }
     }
 
@@ -313,6 +396,11 @@ struct PlayerView: View {
     }
 
     private func toggleControls() {
+        if showAspect {
+            withAnimation { showAspect = false }
+            bumpHide()
+            return
+        }
         if controls {
             hideTask?.cancel()
             withAnimation { controls = false }
@@ -326,7 +414,7 @@ struct PlayerView: View {
         withAnimation { controls = true }
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if !Task.isCancelled && !showList && scrub == nil {
+            if !Task.isCancelled && !showList && scrub == nil && !showAspect {
                 withAnimation { controls = false }
             }
         }

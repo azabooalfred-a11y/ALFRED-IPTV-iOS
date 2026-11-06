@@ -60,7 +60,7 @@ struct SettingsView: View {
                         HStack {
                             Text("Playlist: \(store.current?.name ?? "")")
                             Spacer()
-                            Text("\(Updater.currentVersion) (\(Updater.currentBuild))")
+                            Text("Version \(Updater.currentVersion)")
                         }
                         .font(.system(size: 12))
                         .foregroundColor(Color(hex: 0xCFD6FF))

@@ -22,7 +22,7 @@ jobs:
           xcodebuild -workspace ALFREDIPTV.xcworkspace -scheme ALFREDIPTV -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }} build > build.log 2>&1
+            ALFRED_BUILD=${{ github.run_number }} build > build.log 2>&1
           code=$?
           tail -40 build.log
           if [ $code -ne 0 ]; then

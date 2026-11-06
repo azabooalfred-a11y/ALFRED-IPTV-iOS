@@ -11,6 +11,8 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     /// Position and length in milliseconds (movies / episodes).
     @Published var time: Int32 = 0
     @Published var length: Int32 = 0
+    /// Picture size of the stream (for the full-screen options).
+    @Published var videoSize: CGSize = .zero
     private var volume: Int32 = 100
 
     override init() {
@@ -87,6 +89,8 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             self.time = self.player.time.intValue
             let len = self.player.media?.length.intValue ?? 0
             if len != self.length { self.length = len }
+            let vs = self.player.videoSize
+            if vs.width > 0, vs != self.videoSize { self.videoSize = vs }
             guard self.buffering else { return }
             self.buffering = false
             self.playing = true

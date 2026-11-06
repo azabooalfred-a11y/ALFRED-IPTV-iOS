@@ -14,7 +14,7 @@ enum Updater {
     static let ipaURL = "https://github.com/azabooalfred-a11y/ALFRED-IPTV-iOS/releases/download/latest/ALFRED-IPTV.ipa"
     static var checkedThisLaunch = false
 
-    static var currentBuild: Int { Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0") ?? 0 }
+    static var currentBuild: Int { Int(Bundle.main.infoDictionary?["ALFREDBuild"] as? String ?? "0") ?? 0 }
     static var currentVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "" }
 
     /// The newer version, or nil when this one is the latest (or GitHub can't be reached).
@@ -53,7 +53,7 @@ struct UpdateBox: View {
             VStack(spacing: 8) {
                 Image("Logo").resizable().frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 14))
                 Text("Update available").font(.system(size: 19, weight: .black))
-                Text("Version \(info.version) is ready (you have \(Updater.currentVersion))")
+                Text("A new version of ALFRED-IPTV is ready.")
                     .font(.system(size: 13)).foregroundColor(Color(hex: 0xCFD6FF))
                     .multilineTextAlignment(.center)
                 if let notes = info.notes, !notes.isEmpty {

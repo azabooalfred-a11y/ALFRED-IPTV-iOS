@@ -1,3 +1,1 @@
-Movies & Series
-New Settings page
-Update from inside the app
+Full-screen options in the live player (Fit, Fill screen, Stretch, 16:9, 4:3)
