@@ -163,10 +163,10 @@ struct PlayerView: View {
                 bottomBar
             }
             .padding(.leading, 64)
-            .padding(.trailing, live ? 76 : 64)
+            .padding(.trailing, 76)
             .padding(.bottom, 14)
 
-            if live { aspectButton }
+            aspectButton
         }
     }
 
@@ -216,7 +216,6 @@ struct PlayerView: View {
 
     /// How much to stretch the picture (VLC draws it "fit" inside the view).
     private func scale(_ g: GeometryProxy) -> CGSize {
-        guard live else { return CGSize(width: 1, height: 1) }
         let full = UIScreen.main.bounds.size
         let W = max(full.width, full.height), H = min(full.width, full.height)
         var v = engine.videoSize
