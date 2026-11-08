@@ -159,14 +159,10 @@ struct LogoImage: View {
     let url: String
 
     var body: some View {
-        AsyncImage(url: URL(string: url)) { phase in
-            if let img = phase.image {
-                img.resizable().scaledToFit()
-            } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(hex: 0x1C2132))
-                    .overlay(Image(systemName: "tv").font(.system(size: 11)).foregroundColor(T.dim))
-            }
+        RemoteImage(url: url, maxPixels: 120, fill: false) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(hex: 0x1C2132))
+                .overlay(Image(systemName: "tv").font(.system(size: 11)).foregroundColor(T.dim))
         }
     }
 }

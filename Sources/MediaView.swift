@@ -6,10 +6,11 @@ struct CatRoute: Hashable {
 }
 
 struct PosterCard: View {
-    @EnvironmentObject var store: Store
     let item: VodItem
     var w: CGFloat = 105
     var h: CGFloat = 155
+    var fav = false
+    var progress: Double = 0
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -31,7 +32,7 @@ struct PosterCard: View {
             }
         }
         .overlay(alignment: .bottom) {
-            let f = item.kind == .movie ? store.progress(item.favKey) : 0
+            let f = progress
             if f > 0.01 {
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
@@ -43,7 +44,7 @@ struct PosterCard: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if store.isFav(item.favKey) {
+            if fav {
                 Image(systemName: "heart.fill").font(.system(size: 11)).foregroundColor(Color(hex: 0xFF4785)).padding(6)
             }
         }
@@ -68,15 +69,14 @@ struct Poster: View {
         let c = Poster.pal[seed.unicodeScalars.reduce(0) { $0 + Int($1.value) } % Poster.pal.count]
         ZStack {
             LinearGradient(colors: c, startPoint: .topLeading, endPoint: .bottomTrailing)
-            AsyncImage(url: URL(string: url)) { phase in
-                if let img = phase.image { img.resizable().scaledToFill() } else { Color.clear }
-            }
+            RemoteImage(url: url, maxPixels: 360) { Color.clear }
         }
         .clipped()
     }
 }
 
 /// Movies / Series — category bar A: categories always on the left, posters of the picked one on the right.
+/// Lists are worked out once (when loaded / when something changes), not on every redraw, so it stays fast.
 struct MediaView: View {
     let kind: Kind
     @EnvironmentObject var store: Store
@@ -85,7 +85,6 @@ struct MediaView: View {
 
     @State private var cats: [Category] = []
     @State private var items: [VodItem] = []
-    @State private var byCat: [String: [VodItem]] = [:]
     @State private var loading = true
     @State private var errText: String?
     @State private var cat = "all"
@@ -93,6 +92,12 @@ struct MediaView: View {
     @State private var askPin = false
     @State private var pendingCat: String?
     @State private var detail: VodItem?
+
+    // worked out in rebuild()
+    @State private var barCats: [Category] = []
+    @State private var lists: [String: [VodItem]] = [:]
+    @State private var shown: [VodItem] = []
+    @State private var searchTask: Task<Void, Never>?
 
     private var hk: String { kind.rawValue }
 
@@ -126,7 +131,9 @@ struct MediaView: View {
                                 .frame(width: land ? min(210, g.size.width * 0.23) : 120)
                             VStack(spacing: 8) {
                                 SearchField(text: $query, placeholder: "Search \(catName(cat))")
-                                MediaGridBody(items: shown, minWidth: land ? 84 : 100) { detail = $0 }
+                                MediaGridBody(items: shown, minWidth: land ? 84 : 100, fav: { store.isFav($0.favKey) },
+                                              progress: { $0.kind == .movie ? store.progress($0.favKey) : 0 }) { detail = $0 }
+                                    .id(cat)
                             }
                         }
                     }
@@ -135,10 +142,21 @@ struct MediaView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .fullScreenCover(item: $detail) { DetailView(item: $0).environmentObject(store) }
+        .fullScreenCover(item: $detail, onDismiss: { rebuild() }) { DetailView(item: $0).environmentObject(store) }
         .task(id: store.reloadToken) { await load() }
-        .onChange(of: sortMode) { _ in regroup() }
-        .pinPrompt($askPin) { if let c = pendingCat { cat = c } }
+        .onChange(of: sortMode) { _ in rebuild() }
+        .onChange(of: cat) { _ in updateShown() }
+        .onChange(of: query) { _ in
+            searchTask?.cancel()
+            searchTask = Task {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if !Task.isCancelled { updateShown() }
+            }
+        }
+        .pinPrompt($askPin) {
+            rebuild()
+            if let c = pendingCat { cat = c }
+        }
     }
 
     private var header: some View {
@@ -154,25 +172,18 @@ struct MediaView: View {
 
     // MARK: category bar
 
-    private var allCats: [Category] {
-        let hid = store.hiddenSet(hk)
-        return [Category(id: "continue", name: "Continue Watching"),
-                Category(id: "all", name: "All"), Category(id: "fav", name: "Favorites"),
-                Category(id: "history", name: "Recently Watched"), Category(id: "recent", name: "Recently Added")]
-            + cats.filter { !hid.contains($0.id) && !(byCat[$0.id]?.isEmpty ?? true) }
-    }
-
     private func categoryBar(land: Bool) -> some View {
         ScrollView(showsIndicators: false) {
             LazyVStack(spacing: 2) {
-                ForEach(allCats) { c in
+                ForEach(barCats) { c in
                     let locked = store.isLocked(hk, c.id)
                     HStack(spacing: 4) {
                         Text((locked ? "🔒 " : "") + c.name)
                             .font(.system(size: land ? 13 : 12, weight: cat == c.id ? .bold : .regular))
                             .lineLimit(1)
                         Spacer(minLength: 2)
-                        Text("\(count(c.id))").font(.system(size: 10)).foregroundColor(cat == c.id ? .white.opacity(0.8) : T.dim)
+                        Text("\(lists[c.id]?.count ?? 0)").font(.system(size: 10))
+                            .foregroundColor(cat == c.id ? .white.opacity(0.8) : T.dim)
                     }
                     .foregroundColor(.white)
                     .padding(.vertical, 9).padding(.horizontal, 8)
@@ -194,56 +205,53 @@ struct MediaView: View {
             pendingCat = id
             askPin = true
         } else {
-            cat = id
             query = ""
+            cat = id
         }
     }
 
-    private func catName(_ id: String) -> String { allCats.first { $0.id == id }?.name ?? kind.title }
+    private func catName(_ id: String) -> String { barCats.first { $0.id == id }?.name ?? kind.title }
 
-    private func count(_ id: String) -> Int {
-        switch id {
-        case "all": return items.filter(visible).count
-        case "fav", "history", "recent", "continue": return itemsFor(id).count
-        default: return byCat[id]?.count ?? 0
+    // MARK: data (worked out once)
+
+    private func rebuild() {
+        let hid = store.hiddenSet(hk)
+        let lock = store.parentalOn && !store.unlocked ? store.lockedSet(hk) : []
+        let sorted = Sorts.vod(items, sortMode)
+        var byCat: [String: [VodItem]] = [:]
+        var visible: [VodItem] = []
+        visible.reserveCapacity(sorted.count)
+        for it in sorted {
+            if hid.contains(it.categoryId) { continue }
+            byCat[it.categoryId, default: []].append(it)
+            if !lock.contains(it.categoryId) { visible.append(it) }
         }
-    }
-
-    // MARK: data
-
-    private func visible(_ it: VodItem) -> Bool {
-        !store.hiddenSet(hk).contains(it.categoryId) && !store.isLocked(hk, it.categoryId)
-    }
-
-    private func itemsFor(_ id: String) -> [VodItem] {
-        switch id {
-        case "all": return Sorts.vod(items.filter(visible), sortMode)
-        case "recent": return Array(Sorts.vod(items.filter(visible), 3).prefix(100))
-        case "fav": return items.filter { store.isFav($0.favKey) && visible($0) }
-        case "continue":
-            if kind == .movie {
-                return items.filter { visible($0) && store.progress($0.favKey) > 0.01 }
-                    .sorted { store.savedAt($0.favKey) > store.savedAt($1.favKey) }
-            }
-            return items.filter { visible($0) && store.lastEpisode($0.id) != nil }
+        var l: [String: [VodItem]] = byCat
+        for k in lock { l[k] = [] }
+        l["all"] = visible
+        l["recent"] = Array(visible.sorted { $0.added > $1.added }.prefix(100))
+        l["fav"] = visible.filter { store.isFav($0.favKey) }
+        let byId = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        l["history"] = store.historyIds(hk).compactMap { byId[$0] }
+        if kind == .movie {
+            l["continue"] = visible.filter { store.progress($0.favKey) > 0.01 }
+                .sorted { store.savedAt($0.favKey) > store.savedAt($1.favKey) }
+        } else {
+            l["continue"] = visible.filter { store.lastEpisode($0.id) != nil }
                 .sorted { store.lastEpisodeAt($0.id) > store.lastEpisodeAt($1.id) }
-        case "history":
-            let byId = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            return store.historyIds(hk).compactMap { byId[$0] }.filter(visible)
-        default: return store.isLocked(hk, id) ? [] : (byCat[id] ?? [])
         }
+        lists = l
+        barCats = [Category(id: "continue", name: "Continue Watching"),
+                   Category(id: "all", name: "All"), Category(id: "fav", name: "Favorites"),
+                   Category(id: "history", name: "Recently Watched"), Category(id: "recent", name: "Recently Added")]
+            + cats.filter { !hid.contains($0.id) && !(byCat[$0.id]?.isEmpty ?? true) }
+        updateShown()
     }
 
-    private var shown: [VodItem] {
-        let l = itemsFor(cat)
+    private func updateShown() {
+        let base = lists[cat] ?? []
         let q = query.trimmed
-        return q.isEmpty ? l : l.filter { $0.name.localizedCaseInsensitiveContains(q) }
-    }
-
-    private func regroup() {
-        var g: [String: [VodItem]] = [:]
-        for it in Sorts.vod(items, sortMode) { g[it.categoryId, default: []].append(it) }
-        byCat = g
+        shown = q.isEmpty ? base : base.filter { $0.name.localizedCaseInsensitiveContains(q) }
     }
 
     private func load() async {
@@ -256,8 +264,8 @@ struct MediaView: View {
             let (cs, ss) = try await (c, s)
             cats = cs
             items = ss
-            regroup()
-            if cat == "all" && !itemsFor("continue").isEmpty { cat = "continue" }
+            rebuild()
+            if cat == "all" && !(lists["continue"]?.isEmpty ?? true) { cat = "continue" }
         } catch {
             errText = error.localizedDescription
         }
@@ -268,6 +276,8 @@ struct MediaView: View {
 struct MediaGridBody: View {
     let items: [VodItem]
     var minWidth: CGFloat = 100
+    var fav: (VodItem) -> Bool = { _ in false }
+    var progress: (VodItem) -> Double = { _ in 0 }
     let open: (VodItem) -> Void
 
     var body: some View {
@@ -283,7 +293,8 @@ struct MediaGridBody: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: minWidth, maximum: minWidth * 1.3), spacing: 8)], spacing: 8) {
                     ForEach(items) { it in
                         Button { open(it) } label: {
-                            PosterCard(item: it, w: minWidth, h: minWidth * 1.48).frame(maxWidth: .infinity)
+                            PosterCard(item: it, w: minWidth, h: minWidth * 1.48, fav: fav(it), progress: progress(it))
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(Press())
                     }

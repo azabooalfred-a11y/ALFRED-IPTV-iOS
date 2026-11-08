@@ -1,2 +1,2 @@
-Fixed opening movies and series
-Continue Watching in Movies and Series
+Faster and smoother Movies & Series
+Videos start faster; back button no longer freezes

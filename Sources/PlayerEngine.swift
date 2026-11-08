@@ -5,6 +5,8 @@ import MobileVLCKit
 /// VLC player (plays .ts, .m3u8, .mkv and the rest).
 final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     let player = VLCMediaPlayer()
+    /// VLC's stop / open can block for seconds on network streams: keep them off the main thread.
+    private let queue = DispatchQueue(label: "alfred.vlc", qos: .userInitiated)
     @Published var playing = false
     @Published var buffering = false
     @Published var failed = false
@@ -22,7 +24,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         player.delegate = self
     }
 
-    func play(_ url: URL?) {
+    func play(_ url: URL?, live: Bool = true) {
         guard let url else {
             failed = true
             return
@@ -33,18 +35,26 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         length = 0
         let media = VLCMedia(url: url)
         media.addOptions([
-            "network-caching": 1500,
+            "network-caching": live ? 1000 : 600,
             "http-user-agent": Xtream.userAgent,
             "http-reconnect": true,
+            "avcodec-hw": "any",
         ])
-        player.media = media
-        player.play()
+        let p = player
+        queue.async {
+            if p.media != nil { p.stop() }
+            p.media = media
+            p.play()
+        }
     }
 
     func stop() {
-        if player.media != nil { player.stop() }
         playing = false
         buffering = false
+        let p = player
+        queue.async {
+            if p.media != nil { p.stop() }
+        }
     }
 
     func toggle() {

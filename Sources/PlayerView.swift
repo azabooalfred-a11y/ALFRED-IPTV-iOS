@@ -388,7 +388,7 @@ struct PlayerView: View {
             engine.pendingFraction = f > 0.01 && f < 0.95 ? f : 0
             if let sid = item.seriesId { store.setLastEpisode(sid, item.id) }
         }
-        engine.play(item.url)
+        engine.play(item.url, live: live)
         now = ""
         next = ""
         guard live, let c = item.channel else { return }
