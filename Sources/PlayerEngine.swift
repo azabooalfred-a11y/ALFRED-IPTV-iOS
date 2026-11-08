@@ -105,6 +105,7 @@ struct VLCVideoView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let v = UIView()
         v.backgroundColor = .black
+        v.isUserInteractionEnabled = false   // taps go to the SwiftUI view on top (preview → full screen)
         engine.player.drawable = v
         return v
     }

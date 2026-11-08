@@ -259,6 +259,7 @@ struct LiveView: View {
             }
             .aspectRatio(16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())
             .onTapGesture { openFull(list) }
 
             if let s = selected {
