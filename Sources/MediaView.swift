@@ -30,6 +30,18 @@ struct PosterCard: View {
                     .padding(5)
             }
         }
+        .overlay(alignment: .bottom) {
+            let f = item.kind == .movie ? store.progress(item.favKey) : 0
+            if f > 0.01 {
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Color.white.opacity(0.25))
+                        Rectangle().fill(T.cyan).frame(width: g.size.width * f)
+                    }
+                }
+                .frame(height: 3)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if store.isFav(item.favKey) {
                 Image(systemName: "heart.fill").font(.system(size: 11)).foregroundColor(Color(hex: 0xFF4785)).padding(6)
@@ -80,6 +92,7 @@ struct MediaView: View {
     @State private var query = ""
     @State private var askPin = false
     @State private var pendingCat: String?
+    @State private var detail: VodItem?
 
     private var hk: String { kind.rawValue }
 
@@ -113,7 +126,7 @@ struct MediaView: View {
                                 .frame(width: land ? min(210, g.size.width * 0.23) : 120)
                             VStack(spacing: 8) {
                                 SearchField(text: $query, placeholder: "Search \(catName(cat))")
-                                MediaGridBody(items: shown, minWidth: land ? 84 : 100)
+                                MediaGridBody(items: shown, minWidth: land ? 84 : 100) { detail = $0 }
                             }
                         }
                     }
@@ -122,7 +135,7 @@ struct MediaView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(for: VodItem.self) { DetailView(item: $0) }
+        .fullScreenCover(item: $detail) { DetailView(item: $0).environmentObject(store) }
         .task(id: store.reloadToken) { await load() }
         .onChange(of: sortMode) { _ in regroup() }
         .pinPrompt($askPin) { if let c = pendingCat { cat = c } }
@@ -143,7 +156,8 @@ struct MediaView: View {
 
     private var allCats: [Category] {
         let hid = store.hiddenSet(hk)
-        return [Category(id: "all", name: "All"), Category(id: "fav", name: "Favorites"),
+        return [Category(id: "continue", name: "Continue Watching"),
+                Category(id: "all", name: "All"), Category(id: "fav", name: "Favorites"),
                 Category(id: "history", name: "Recently Watched"), Category(id: "recent", name: "Recently Added")]
             + cats.filter { !hid.contains($0.id) && !(byCat[$0.id]?.isEmpty ?? true) }
     }
@@ -190,7 +204,7 @@ struct MediaView: View {
     private func count(_ id: String) -> Int {
         switch id {
         case "all": return items.filter(visible).count
-        case "fav", "history", "recent": return itemsFor(id).count
+        case "fav", "history", "recent", "continue": return itemsFor(id).count
         default: return byCat[id]?.count ?? 0
         }
     }
@@ -206,6 +220,13 @@ struct MediaView: View {
         case "all": return Sorts.vod(items.filter(visible), sortMode)
         case "recent": return Array(Sorts.vod(items.filter(visible), 3).prefix(100))
         case "fav": return items.filter { store.isFav($0.favKey) && visible($0) }
+        case "continue":
+            if kind == .movie {
+                return items.filter { visible($0) && store.progress($0.favKey) > 0.01 }
+                    .sorted { store.savedAt($0.favKey) > store.savedAt($1.favKey) }
+            }
+            return items.filter { visible($0) && store.lastEpisode($0.id) != nil }
+                .sorted { store.lastEpisodeAt($0.id) > store.lastEpisodeAt($1.id) }
         case "history":
             let byId = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             return store.historyIds(hk).compactMap { byId[$0] }.filter(visible)
@@ -236,6 +257,7 @@ struct MediaView: View {
             cats = cs
             items = ss
             regroup()
+            if cat == "all" && !itemsFor("continue").isEmpty { cat = "continue" }
         } catch {
             errText = error.localizedDescription
         }
@@ -243,46 +265,16 @@ struct MediaView: View {
     }
 }
 
-/// "See all": every title of one category, with search.
-struct MediaGrid: View {
-    let title: String
-    let items: [VodItem]
-    @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-
-    var body: some View {
-        GeometryReader { g in
-            let land = isLandscape(g)
-            ZStack {
-                AppBackground()
-                VStack(spacing: 8) {
-                    HStack(spacing: 10) {
-                        CircleButton(icon: "chevron.left", size: 36) { dismiss() }
-                        Text(title).font(.system(size: 18, weight: .black)).foregroundColor(.white).lineLimit(1)
-                        Spacer()
-                        Clock(size: 16)
-                    }
-                    .padding(.top, 4)
-                    SearchField(text: $query, placeholder: "Search")
-                    MediaGridBody(items: query.trimmed.isEmpty ? items
-                                  : items.filter { $0.name.localizedCaseInsensitiveContains(query.trimmed) })
-                }
-                .padding(.horizontal, land ? 20 : 14)
-            }
-        }
-        .toolbar(.hidden, for: .navigationBar)
-    }
-}
-
 struct MediaGridBody: View {
     let items: [VodItem]
     var minWidth: CGFloat = 100
+    let open: (VodItem) -> Void
 
     var body: some View {
         if items.isEmpty {
             VStack {
                 Spacer()
-                Text("Nothing found").foregroundColor(T.dim)
+                Text("Nothing here").foregroundColor(T.dim)
                 Spacer()
             }
             .frame(maxWidth: .infinity)
@@ -290,7 +282,7 @@ struct MediaGridBody: View {
             ScrollView(showsIndicators: false) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: minWidth, maximum: minWidth * 1.3), spacing: 8)], spacing: 8) {
                     ForEach(items) { it in
-                        NavigationLink(value: it) {
+                        Button { open(it) } label: {
                             PosterCard(item: it, w: minWidth, h: minWidth * 1.48).frame(maxWidth: .infinity)
                         }
                         .buttonStyle(Press())

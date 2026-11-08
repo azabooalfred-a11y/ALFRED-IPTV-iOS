@@ -59,7 +59,7 @@ struct DetailView: View {
         .task {
             guard let api = store.api else { return }
             d = await api.details(item)
-            season = d.seasons.first ?? 0
+            season = lastEp?.season ?? d.seasons.first ?? 0
             loading = false
         }
         .fullScreenCover(item: $playing) { r in PlayerView(request: r).environmentObject(store) }
@@ -117,8 +117,18 @@ struct DetailView: View {
         }
     }
 
+    /// The episode watched last (for "Continue S1 E3").
+    private var lastEp: Episode? {
+        guard let id = store.lastEpisode(item.id) else { return nil }
+        return d.episodes.values.flatMap { $0 }.first { $0.id == id }
+    }
+
     private var playTitle: String {
-        if item.kind == .movie || !item.directURL.isEmpty { return "Play" }
+        if item.kind == .movie || !item.directURL.isEmpty {
+            let t = store.positionText(item.favKey)
+            return store.progress(item.favKey) > 0.01 ? "Continue (\(t))" : "Play"
+        }
+        if let e = lastEp { return "Continue S\(e.season) E\(e.num)" }
         guard let e = episodes.first else { return "Play" }
         return "Play S\(e.season) E\(e.num)"
     }
@@ -171,7 +181,9 @@ struct DetailView: View {
                 Text("\(e.num)").font(.system(size: 14, weight: .semibold)).foregroundColor(T.cyan).frame(width: 26, alignment: .leading)
                 Text(e.title.isEmpty ? "Episode \(e.num)" : e.title).font(.system(size: 14)).lineLimit(1)
                 Spacer()
-                if !e.duration.isEmpty { Text(e.duration).font(.system(size: 11)).foregroundColor(T.dim) }
+                if store.progress("ep:" + e.id) > 0.01 {
+                    Text(store.positionText("ep:" + e.id)).font(.system(size: 11)).foregroundColor(T.cyan)
+                } else if !e.duration.isEmpty { Text(e.duration).font(.system(size: 11)).foregroundColor(T.dim) }
                 Image(systemName: "play.fill").font(.system(size: 11))
             }
             .foregroundColor(.white)
@@ -186,8 +198,11 @@ struct DetailView: View {
         if item.kind == .movie || !item.directURL.isEmpty {
             store.addHistory(item.kind.rawValue, item.id)
             playing = PlayRequest(items: [PlayItem(id: item.id, num: 1, title: item.name, icon: item.cover,
-                                                   url: api.movieURL(item, ext: d.ext))],
+                                                   url: api.movieURL(item, ext: d.ext), resumeKey: item.favKey)],
                                   index: 0, live: false)
+        } else if let last = lastEp {
+            season = last.season
+            if let i = episodes.firstIndex(where: { $0.id == last.id }) { playEpisode(i) }
         } else if !episodes.isEmpty {
             playEpisode(0)
         }
@@ -199,7 +214,8 @@ struct DetailView: View {
         let items = episodes.map { e in
             PlayItem(id: e.id, num: e.num,
                      title: "\(item.name) · S\(e.season) E\(e.num)",
-                     icon: e.image.isEmpty ? item.cover : e.image, url: api.episodeURL(e))
+                     icon: e.image.isEmpty ? item.cover : e.image, url: api.episodeURL(e),
+                     resumeKey: "ep:" + e.id, seriesId: item.id)
         }
         playing = PlayRequest(items: items, index: i, live: false)
     }

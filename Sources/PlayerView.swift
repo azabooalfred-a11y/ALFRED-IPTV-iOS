@@ -9,6 +9,9 @@ struct PlayItem: Identifiable {
     let icon: String
     let url: URL?
     var channel: Channel? = nil
+    /// Continue watching key ("movie:id" / "ep:id") and the series it belongs to.
+    var resumeKey: String? = nil
+    var seriesId: String? = nil
 }
 
 struct PlayRequest: Identifiable {
@@ -92,6 +95,7 @@ struct PlayerView: View {
             bumpHide()
         }
         .onDisappear {
+            savePos()
             engine.stop()
             hideTask?.cancel()
             UIApplication.shared.isIdleTimerDisabled = false
@@ -351,6 +355,7 @@ struct PlayerView: View {
                                 .contentShape(Rectangle())
                                 .id(i)
                                 .onTapGesture {
+                                    savePos()
                                     index = i
                                     start()
                                 }
@@ -371,8 +376,18 @@ struct PlayerView: View {
 
     // MARK: actions
 
+    private func savePos() {
+        guard !live, let key = item.resumeKey else { return }
+        store.savePosition(key, time: Double(engine.time), length: Double(engine.length))
+    }
+
     private func start() {
         engine.setVolume(Int(vol * 100))
+        if let key = item.resumeKey {
+            let f = store.progress(key)
+            engine.pendingFraction = f > 0.01 && f < 0.95 ? f : 0
+            if let sid = item.seriesId { store.setLastEpisode(sid, item.id) }
+        }
         engine.play(item.url)
         now = ""
         next = ""
@@ -390,6 +405,7 @@ struct PlayerView: View {
 
     private func change(_ step: Int) {
         guard !list.isEmpty else { return }
+        savePos()
         index = (index + step + list.count) % list.count
         start()
         bumpHide()

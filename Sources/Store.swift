@@ -24,6 +24,10 @@ final class Store: ObservableObject {
     @Published private var hidden: [String: Set<String>] = [:]
     @Published private var locked: [String: Set<String>] = [:]
     @Published private(set) var pin: String = ""
+    /// Continue watching: "movie:id" / "ep:id" -> [time ms, length ms, saved at]
+    @Published private var positions: [String: [Double]] = [:]
+    /// Last episode watched per series: seriesId -> [episode id, saved at]
+    @Published private var lastEp: [String: [String]] = [:]
     /// PIN entered this session: locked categories open.
     @Published var unlocked = false
 
@@ -40,6 +44,8 @@ final class Store: ObservableObject {
         locked = Store.loadSets(d, "locked")
         history = d.dictionary(forKey: "history") as? [String: [String]] ?? [:]
         pin = d.string(forKey: "pin") ?? ""
+        positions = d.dictionary(forKey: "positions") as? [String: [Double]] ?? [:]
+        lastEp = d.dictionary(forKey: "lastEp") as? [String: [String]] ?? [:]
     }
 
     private static func loadSets(_ d: UserDefaults, _ key: String) -> [String: Set<String>] {
@@ -153,7 +159,42 @@ final class Store: ObservableObject {
     func clearHistory() {
         for k in ["live", "movie", "series"] { history[pid + k] = nil }
         d.set(history, forKey: "history")
+        for k in positions.keys where k.hasPrefix(pid) { positions[k] = nil }
+        for k in lastEp.keys where k.hasPrefix(pid) { lastEp[k] = nil }
+        d.set(positions, forKey: "positions")
+        d.set(lastEp, forKey: "lastEp")
     }
+
+    // MARK: continue watching
+
+    func savePosition(_ key: String, time: Double, length: Double) {
+        guard length > 0 else { return }
+        let f = time / length
+        if time < 15000 && f < 0.02 { return }
+        if f > 0.95 { positions[pid + key] = nil } else { positions[pid + key] = [time, length, Date().timeIntervalSince1970] }
+        d.set(positions, forKey: "positions")
+    }
+
+    /// 0...1 watched, or 0 if not started / finished.
+    func progress(_ key: String) -> Double {
+        guard let v = positions[pid + key], v.count >= 2, v[1] > 0 else { return 0 }
+        return v[0] / v[1]
+    }
+
+    func positionText(_ key: String) -> String {
+        guard let v = positions[pid + key], v.count >= 2 else { return "" }
+        return PlayerView.clock(v[0])
+    }
+
+    func savedAt(_ key: String) -> Double { positions[pid + key].flatMap { $0.count > 2 ? $0[2] : nil } ?? 0 }
+
+    func setLastEpisode(_ seriesId: String, _ epId: String) {
+        lastEp[pid + seriesId] = [epId, String(Date().timeIntervalSince1970)]
+        d.set(lastEp, forKey: "lastEp")
+    }
+
+    func lastEpisode(_ seriesId: String) -> String? { lastEp[pid + seriesId]?.first }
+    func lastEpisodeAt(_ seriesId: String) -> Double { Double(lastEp[pid + seriesId]?.last ?? "") ?? 0 }
 
     // MARK: hidden / locked categories ("live", "movie", "series")
 

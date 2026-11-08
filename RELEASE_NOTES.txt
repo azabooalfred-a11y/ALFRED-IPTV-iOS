@@ -1,1 +1,2 @@
-Movies & Series: category bar on the left
+Fixed opening movies and series
+Continue Watching in Movies and Series
