@@ -100,6 +100,7 @@ struct MediaView: View {
     @State private var searchTask: Task<Void, Never>?
 
     private var hk: String { kind.rawValue }
+    private let special: Set<String> = ["continue", "all", "fav", "history", "recent"]
 
     var body: some View {
         GeometryReader { g in
@@ -191,6 +192,11 @@ struct MediaView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .contentShape(Rectangle())
                     .onTapGesture { pick(c.id) }
+                    .modifier(CategoryMoveMenu(enabled: !special.contains(c.id)) { how in
+                        let real = barCats.filter { !special.contains($0.id) }
+                        store.moveCategory(hk, c.id, how, current: real)
+                        withAnimation { rebuild() }
+                    })
                 }
             }
             .padding(6)
@@ -244,7 +250,7 @@ struct MediaView: View {
         barCats = [Category(id: "continue", name: "Continue Watching"),
                    Category(id: "all", name: "All"), Category(id: "fav", name: "Favorites"),
                    Category(id: "history", name: "Recently Watched"), Category(id: "recent", name: "Recently Added")]
-            + cats.filter { !hid.contains($0.id) && !(byCat[$0.id]?.isEmpty ?? true) }
+            + store.ordered(hk, cats.filter { !hid.contains($0.id) && !(byCat[$0.id]?.isEmpty ?? true) })
         updateShown()
     }
 

@@ -28,6 +28,8 @@ final class Store: ObservableObject {
     @Published private var positions: [String: [Double]] = [:]
     /// Last episode watched per series: seriesId -> [episode id, saved at]
     @Published private var lastEp: [String: [String]] = [:]
+    /// Category order picked with press-and-hold: "<playlist><kind>" -> category ids
+    @Published private var catOrder: [String: [String]] = [:]
     /// PIN entered this session: locked categories open.
     @Published var unlocked = false
 
@@ -46,6 +48,7 @@ final class Store: ObservableObject {
         pin = d.string(forKey: "pin") ?? ""
         positions = d.dictionary(forKey: "positions") as? [String: [Double]] ?? [:]
         lastEp = d.dictionary(forKey: "lastEp") as? [String: [String]] ?? [:]
+        catOrder = d.dictionary(forKey: "catOrder") as? [String: [String]] ?? [:]
     }
 
     private static func loadSets(_ d: UserDefaults, _ key: String) -> [String: Set<String>] {
@@ -165,6 +168,42 @@ final class Store: ObservableObject {
         d.set(lastEp, forKey: "lastEp")
     }
 
+    // MARK: category order (press and hold a category, like the Android app)
+
+    /// Puts categories in the saved order; categories not moved yet keep their place after them.
+    func ordered(_ kind: String, _ cats: [Category]) -> [Category] {
+        guard let order = catOrder[pid + kind], !order.isEmpty else { return cats }
+        let pos = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return cats.enumerated().sorted { a, b in
+            switch (pos[a.element.id], pos[b.element.id]) {
+            case let (x?, y?): return x < y
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return a.offset < b.offset
+            }
+        }
+        .map(\.element)
+    }
+
+    func moveCategory(_ kind: String, _ id: String, _ how: CatMove, current: [Category]) {
+        if how == .reset {
+            catOrder[pid + kind] = nil
+        } else {
+            var ids = current.map(\.id)
+            guard let i = ids.firstIndex(of: id) else { return }
+            ids.remove(at: i)
+            let to: Int
+            switch how {
+            case .top: to = 0
+            case .up: to = max(0, i - 1)
+            default: to = min(ids.count, i + 1)
+            }
+            ids.insert(id, at: to)
+            catOrder[pid + kind] = ids
+        }
+        d.set(catOrder, forKey: "catOrder")
+    }
+
     // MARK: continue watching
 
     func savePosition(_ key: String, time: Double, length: Double) {
@@ -267,5 +306,28 @@ struct PinPrompt: ViewModifier {
 extension View {
     func pinPrompt(_ show: Binding<Bool>, message: String = "This category is locked.", onOK: @escaping () -> Void) -> some View {
         modifier(PinPrompt(show: show, message: message, onOK: onOK))
+    }
+}
+
+
+enum CatMove { case top, up, down, reset }
+
+/// Press and hold a category: Move to Top / Move Up / Move Down / Reset Order (same as the Android app).
+struct CategoryMoveMenu: ViewModifier {
+    let enabled: Bool
+    let move: (CatMove) -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.contextMenu {
+                Button { move(.top) } label: { Label("Move to Top", systemImage: "arrow.up.to.line") }
+                Button { move(.up) } label: { Label("Move Up", systemImage: "arrow.up") }
+                Button { move(.down) } label: { Label("Move Down", systemImage: "arrow.down") }
+                Divider()
+                Button(role: .destructive) { move(.reset) } label: { Label("Reset Order", systemImage: "arrow.counterclockwise") }
+            }
+        } else {
+            content
+        }
     }
 }

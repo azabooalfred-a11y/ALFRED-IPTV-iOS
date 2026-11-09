@@ -70,11 +70,22 @@ struct LiveView: View {
     @AppStorage("liveCatSort") private var catSort = 0
     @AppStorage("liveChSort") private var chSort = 0
 
-    private var allCats: [Category] {
+    /// Real categories in the order shown (saved press-and-hold order wins over the sort setting).
+    private var realCats: [Category] {
         let hid = store.hiddenSet("live")
-        return [Category(id: "all", name: "All Channels"), Category(id: "fav", name: "Favorites"),
-                Category(id: "recent", name: "Recently Watched")]
-            + Sorts.cats(cats.filter { !hid.contains($0.id) }, catSort)
+        return store.ordered("live", Sorts.cats(cats.filter { !hid.contains($0.id) }, catSort))
+    }
+
+    private var allCats: [Category] {
+        [Category(id: "all", name: "All Channels"), Category(id: "fav", name: "Favorites"),
+         Category(id: "recent", name: "Recently Watched")] + realCats
+    }
+
+    private func moveMenu(_ c: Category) -> CategoryMoveMenu {
+        let special = ["all", "fav", "recent"].contains(c.id)
+        return CategoryMoveMenu(enabled: !special) { how in
+            withAnimation { store.moveCategory("live", c.id, how, current: realCats) }
+        }
     }
 
     private func pick(_ id: String) {
@@ -181,6 +192,7 @@ struct LiveView: View {
                                 .overlay(Capsule().stroke(Color.white.opacity(cat == c.id ? 0 : 0.12)))
                                 .clipShape(Capsule())
                         }
+                        .modifier(moveMenu(c))
                     }
                 }
             }
@@ -217,6 +229,7 @@ struct LiveView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .contentShape(Rectangle())
                             .onTapGesture { pick(c.id) }
+                            .modifier(moveMenu(c))
                         }
                     }
                 }
