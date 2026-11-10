@@ -467,7 +467,7 @@ struct PlayerView: View {
         }
         shiftStart = nil
         shiftDrag = nil
-        engine.play(item.url, live: live)
+        engine.play(item.url, live: live, hint: item.title)
         now = ""
         next = ""
         guard live, let c = item.channel else { return }
@@ -671,7 +671,7 @@ extension PlayerView {
     private func goLive() {
         guard shiftStart != nil else { return }
         shiftStart = nil
-        engine.play(item.url, live: true)
+        engine.play(item.url, live: true, hint: item.title)
         bumpHide()
     }
 

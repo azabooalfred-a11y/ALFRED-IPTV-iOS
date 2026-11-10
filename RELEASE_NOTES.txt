@@ -1,4 +1,4 @@
-Fixed channels showing a black screen
+Channels start much faster (no more black screen wait)
 Smoother return from Picture-in-Picture to full screen
 Rewind live TV, swipe left / right to change channel
 Search Everything from the home page

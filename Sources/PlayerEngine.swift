@@ -40,6 +40,8 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     var pendingFraction: Double = 0
     private var lastURL: URL?
     private var lastLive = true
+    private var lastHint = ""
+    private static let vlcHints = ["4K", "UHD", "HEVC", "H265", "H.265", "2160"]
     /// The user pressed pause (don't auto-resume after AirPlay / audio route changes).
     private var userPaused = false
     /// Live preview in the channel list: VLC only (its picture view is VLC's).
@@ -140,7 +142,9 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
 
     // MARK: play / stop
 
-    func play(_ url: URL?, live: Bool = true) {
+    /// `hint` = channel / movie name (4K / HEVC channels go straight to VLC: Apple's player shows them black).
+    func play(_ url: URL?, live: Bool = true, hint: String = "") {
+        lastHint = hint.uppercased()
         lastURL = url
         lastLive = live
         userPaused = false
@@ -165,6 +169,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         guard allowAV else { return false }
         if PlayerEngine.vlcOnlyExt.contains(url.pathExtension.lowercased()) { return false }
         if url.path.contains("/timeshift/") { return false }
+        if PlayerEngine.vlcHints.contains(where: { lastHint.contains($0) }) { return false }
         if PlayerEngine.avBad.contains(url.absoluteString) { return false }
         if lastLive, let h = url.host, (PlayerEngine.avBadHosts[h] ?? 0) >= 2 { return false }
         return true
@@ -203,7 +208,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         av.play()
         // Check that a real picture is showing. Apple's player plays the sound of some channels
         // (HEVC / MPEG-2 video) with a black picture: those go to VLC.
-        checkPicture(url, after: 4, tries: 3)
+        checkPicture(url, after: 1.5, tries: 5)
     }
 
     private func checkPicture(_ url: URL, after delay: Double, tries: Int) {
@@ -212,15 +217,16 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
             guard let self, self.usingAV, self.lastURL == url, !self.external else { return }
             let item = self.av.currentItem
             if item?.status != .readyToPlay {
-                if tries > 1 { self.checkPicture(url, after: 2, tries: tries - 1) } else { self.avFailed(hostWide: true) }
+                if tries > 1 { self.checkPicture(url, after: 1, tries: tries - 1) } else { self.avFailed(hostWide: true) }
                 return
             }
             let hasPicture = (item?.presentationSize.width ?? 0) > 0
             if hasPicture { return }
-            if tries > 1 && self.av.timeControlStatus != .playing {
-                self.checkPicture(url, after: 2, tries: tries - 1)
-            } else {
+            // Ready and running but no picture = black screen: hand over to VLC right away.
+            if self.av.timeControlStatus == .playing || tries <= 1 {
                 self.avFailed(hostWide: false)
+            } else {
+                self.checkPicture(url, after: 1, tries: tries - 1)
             }
         }
         watchdog = w
