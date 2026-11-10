@@ -98,11 +98,11 @@ struct LiveView: View {
         }
     }
 
+    /// Typing in the channel search looks through every channel, whatever category is picked.
     private func filtered() -> [Channel] {
-        var l = channels(in: cat)
         let q = qCh.trimmed
-        if !q.isEmpty { l = l.filter { $0.name.localizedCaseInsensitiveContains(q) } }
-        return l
+        if q.isEmpty { return channels(in: cat) }
+        return channels(in: "all").filter { $0.name.localizedCaseInsensitiveContains(q) || "\($0.num)" == q }
     }
 
     /// Channels of one category, in the order shown (also used by the TV Guide).

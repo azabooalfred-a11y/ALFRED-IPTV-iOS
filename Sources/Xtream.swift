@@ -13,6 +13,9 @@ struct Channel: Identifiable, Hashable {
     let categoryId: String
     /// Full link for M3U playlists ("" for Xtream Codes).
     let directURL: String
+    /// The provider keeps past shows for this channel (catch-up), and for how many days.
+    var archive = false
+    var archiveDays = 0
 }
 
 enum Kind: String, Hashable {
@@ -253,7 +256,9 @@ final class Xtream {
         for (i, o) in arr.enumerated() {
             out.append(Channel(id: str(o["stream_id"]), num: Int(str(o["num"])) ?? i + 1,
                                name: str(o["name"]), icon: str(o["stream_icon"]),
-                               categoryId: str(o["category_id"]), directURL: ""))
+                               categoryId: str(o["category_id"]), directURL: "",
+                               archive: str(o["tv_archive"]) == "1",
+                               archiveDays: Int(str(o["tv_archive_duration"])) ?? 0))
         }
         cset("live", out)
         return out
@@ -264,6 +269,34 @@ final class Xtream {
         if !c.directURL.isEmpty { return URL(string: c.directURL) }
         let hls = UserDefaults.standard.integer(forKey: "liveFormat") == 1
         return URL(string: "\(base)/live/\(p.user)/\(p.pass)/\(c.id).\(hls ? "m3u8" : "ts")")
+    }
+
+    // MARK: catch-up (rewind live TV)
+
+    private static var tzCache: [String: TimeZone] = [:]
+
+    /// The server's own time zone (catch-up start times are in the server's local time).
+    func serverTimeZone() async -> TimeZone {
+        Xtream.lock.lock(); let hit = Xtream.tzCache[base]; Xtream.lock.unlock()
+        if let hit { return hit }
+        var tz = TimeZone.current
+        if let data = try? await get(api(nil)),
+           let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let si = o["server_info"] as? [String: Any],
+           let z = TimeZone(identifier: str(si["timezone"])) {
+            tz = z
+        }
+        Xtream.lock.lock(); Xtream.tzCache[base] = tz; Xtream.lock.unlock()
+        return tz
+    }
+
+    /// Link that plays a channel from an earlier time (catch-up).
+    func timeshiftURL(_ c: Channel, start: Date, minutes: Int, tz: TimeZone) -> URL? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = tz
+        f.dateFormat = "yyyy-MM-dd:HH-mm"
+        return URL(string: "\(base)/timeshift/\(p.user)/\(p.pass)/\(max(1, minutes))/\(f.string(from: start))/\(c.id).ts")
     }
 
     /// Now / next programs for one channel (empty when the provider has no guide).

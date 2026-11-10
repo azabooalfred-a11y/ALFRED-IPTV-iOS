@@ -38,6 +38,7 @@ struct HomeView: View {
     @State private var openMovies = false
     @State private var openSeries = false
     @State private var openSettings = false
+    @State private var openSearch = false
     @State private var update: UpdateInfo?
     @State private var showPlaylists = false
     @State private var showAccount = false
@@ -75,6 +76,7 @@ struct HomeView: View {
         .navigationDestination(isPresented: $openMovies) { MediaView(kind: .movie) }
         .navigationDestination(isPresented: $openSeries) { MediaView(kind: .series) }
         .navigationDestination(isPresented: $openSettings) { SettingsView() }
+        .navigationDestination(isPresented: $openSearch) { SearchView() }
         .sheet(isPresented: $showPlaylists) { PlaylistsView().environmentObject(store) }
         .alert("Account", isPresented: $showAccount) {
             Button("OK", role: .cancel) {}
@@ -95,6 +97,7 @@ struct HomeView: View {
         HStack {
             Brand(size: 40)
             Spacer()
+            CircleButton(icon: "magnifyingglass", size: 40) { openSearch = true }
             Clock(size: 20)
         }
     }

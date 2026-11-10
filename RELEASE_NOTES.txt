@@ -1,4 +1,4 @@
-Picture-in-Picture now starts instantly and goes to the home screen
-AirPlay keeps playing when you pick a TV
-Audio & Subtitles menu (CC button): language, subtitles, size and delay
-TV Guide: full schedule grid from the Live TV screen
+Rewind live TV: drag back on channels with catch-up, Go Live to return
+Swipe left / right on the video to change channel
+Search Everything: one search for Live TV, Movies and Series (home page)
+Live TV search now finds channels in every category

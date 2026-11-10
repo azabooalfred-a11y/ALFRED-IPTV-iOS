@@ -45,6 +45,7 @@ struct PlayerView: View {
     @State private var showAspect = false
     /// Full-screen option: 0 Fit, 1 Fill screen, 2 Stretch, 3 16:9, 4 4:3 (remembered).
     @AppStorage("aspectMode") private var aspect = 0
+    @AppStorage("time24") private var t24 = false
     /// CC menu (sample B): 0 main list, 1 audio, 2 subtitles, 3 subtitle size, 4 subtitle delay.
     @State private var showTracks = false
     @State private var trackPage = 0
@@ -58,6 +59,14 @@ struct PlayerView: View {
     @State private var toastTask: Task<Void, Never>?
     /// Name of the AirPlay TV in use ("" = none).
     @State private var tvName = ""
+    /// Swipe: 0 not decided yet, 1 up/down (brightness / volume), 2 left/right (change channel).
+    @State private var dragAxis = 0
+    /// Channel banner after a swipe (sample 10A).
+    @State private var zapBanner = false
+    @State private var zapTask: Task<Void, Never>?
+    /// Rewind live TV (sample 7B): when the picture started (nil = live).
+    @State private var shiftStart: Date?
+    @State private var shiftDrag: Double?
     private static let aspectNames = ["Fit", "Fill screen", "Stretch", "16:9", "4:3"]
 
     init(request: PlayRequest) {
@@ -106,6 +115,7 @@ struct PlayerView: View {
                 .ignoresSafeArea()
 
                 if controls { overlay.transition(.opacity) }
+                if zapBanner && !controls { zapCard.transition(.opacity) }
                 if controls && showTracks { tracksPanel.transition(.opacity) }
                 if let toast {
                     VStack {
@@ -164,6 +174,11 @@ struct PlayerView: View {
             .gesture(
                 DragGesture(minimumDistance: 12)
                     .onChanged { v in
+                        if dragAxis == 0 {
+                            let sideways = abs(v.translation.width) > abs(v.translation.height)
+                            dragAxis = sideways && live && list.count > 1 ? 2 : 1
+                        }
+                        if dragAxis == 2 { return }
                         if dragStart == nil {
                             dragStart = volume ? vol : bright
                             hideTask?.cancel()
@@ -178,7 +193,14 @@ struct PlayerView: View {
                             UIScreen.main.brightness = CGFloat(x)
                         }
                     }
-                    .onEnded { _ in
+                    .onEnded { v in
+                        let axis = dragAxis
+                        dragAxis = 0
+                        if axis == 2 {
+                            // Swipe left = next channel, swipe right = previous.
+                            if abs(v.translation.width) > 50 { zap(v.translation.width < 0 ? 1 : -1) }
+                            return
+                        }
                         dragStart = nil
                         bumpHide()
                     }
@@ -297,6 +319,7 @@ struct PlayerView: View {
     private var bottomBar: some View {
         VStack(spacing: 8) {
             if !live { seekBar }
+            if live && canRewind { rewindBar }
             HStack(spacing: 12) {
                 LogoImage(url: item.icon).frame(width: 46, height: 34)
                 VStack(alignment: .leading, spacing: 2) {
@@ -380,6 +403,9 @@ struct PlayerView: View {
 
     private var subLine: String {
         if !live { return list.count > 1 ? "\(index + 1) of \(list.count)" : "Movie" }
+        if let st = shiftStart {
+            return "Replay · " + Clock.format(st.addingTimeInterval(Double(engine.time) / 1000), t24)
+        }
         if now.isEmpty { return "Live" }
         return next.isEmpty ? "Now: \(now)" : "Now: \(now) · Next: \(next)"
     }
@@ -439,6 +465,8 @@ struct PlayerView: View {
             engine.pendingFraction = f > 0.01 && f < 0.95 ? f : 0
             if let sid = item.seriesId { store.setLastEpisode(sid, item.id) }
         }
+        shiftStart = nil
+        shiftDrag = nil
         engine.play(item.url, live: live)
         now = ""
         next = ""
@@ -522,6 +550,129 @@ extension PlayerView {
             .foregroundColor(.white)
         }
         .allowsHitTesting(false)
+    }
+
+    // MARK: swipe to change channel (10A)
+
+    private func zap(_ step: Int) {
+        change(step)
+        hideTask?.cancel()
+        withAnimation { controls = false; zapBanner = true }
+        zapTask?.cancel()
+        zapTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { withAnimation { zapBanner = false } }
+        }
+    }
+
+    private var zapCard: some View {
+        VStack {
+            Spacer()
+            HStack {
+                HStack(spacing: 12) {
+                    Text("\(item.num)")
+                        .font(.system(size: 28, weight: .black))
+                        .foregroundColor(T.cyan)
+                    LogoImage(url: item.icon).frame(width: 46, height: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title).font(.system(size: 15, weight: .heavy)).lineLimit(1)
+                        Text(now.isEmpty ? "Live" : (next.isEmpty ? "Now: \(now)" : "Now: \(now) · Next: \(next)"))
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: 0xCFD6FF))
+                            .lineLimit(1)
+                    }
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .frame(maxWidth: 420, alignment: .leading)
+                .background(.ultraThinMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.12)))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                Spacer()
+            }
+        }
+        .padding(.leading, 30)
+        .padding(.bottom, 18)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: rewind live TV (7B)
+
+    /// Only for channels where the provider keeps past shows (Xtream catch-up).
+    private var canRewind: Bool {
+        guard let c = item.channel, c.directURL.isEmpty else { return false }
+        return c.archive && c.archiveDays > 0
+    }
+
+    /// How far back the bar goes (up to 4 hours).
+    private var rewindWindow: TimeInterval {
+        min(4 * 3600, Double(item.channel?.archiveDays ?? 0) * 86400)
+    }
+
+    private var rewindBar: some View {
+        let nowD = Date()
+        let from = nowD.addingTimeInterval(-rewindWindow)
+        let playing = shiftStart.map { $0.addingTimeInterval(Double(engine.time) / 1000) } ?? nowD
+        let pos = min(1, max(0, playing.timeIntervalSince(from) / rewindWindow))
+        let shown = shiftDrag.map { from.addingTimeInterval($0 * rewindWindow) } ?? playing
+        return HStack(spacing: 10) {
+            Text(Clock.format(shown, t24))
+                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .frame(minWidth: 54, alignment: .leading)
+            Slider(value: Binding(get: { shiftDrag ?? pos }, set: { shiftDrag = $0 }), in: 0...1) { editing in
+                if editing {
+                    hideTask?.cancel()
+                } else {
+                    if let v = shiftDrag {
+                        if v > 0.985 { goLive() } else { rewind(to: from.addingTimeInterval(v * rewindWindow)) }
+                    }
+                    shiftDrag = nil
+                    bumpHide()
+                }
+            }
+            .tint(T.cyan)
+            if shiftStart == nil {
+                HStack(spacing: 4) {
+                    Circle().fill(Color(hex: 0xFF4785)).frame(width: 7, height: 7)
+                    Text("LIVE")
+                }
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundColor(Color(hex: 0xFF4785))
+            } else {
+                Button { goLive() } label: {
+                    Text("Go Live")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color(hex: 0xFF4785))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(Press())
+            }
+        }
+    }
+
+    private func rewind(to target: Date) {
+        guard let c = item.channel, let api = store.api else { return }
+        let cal = Calendar.current
+        let start = cal.date(bySetting: .second, value: 0, of: target).map {
+            $0 > target ? $0.addingTimeInterval(-60) : $0
+        } ?? target
+        let minutes = Int(Date().timeIntervalSince(start) / 60) + 30
+        let channelId = c.id
+        Task {
+            let tz = await api.serverTimeZone()
+            guard item.channel?.id == channelId, let url = api.timeshiftURL(c, start: start, minutes: minutes, tz: tz) else { return }
+            shiftStart = start
+            engine.play(url, live: true)
+        }
+    }
+
+    private func goLive() {
+        guard shiftStart != nil else { return }
+        shiftStart = nil
+        engine.play(item.url, live: true)
+        bumpHide()
     }
 
     private func pipTapped() {

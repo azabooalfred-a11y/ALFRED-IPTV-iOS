@@ -147,6 +147,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     private func canUseAV(_ url: URL) -> Bool {
         guard allowAV else { return false }
         if PlayerEngine.vlcOnlyExt.contains(url.pathExtension.lowercased()) { return false }
+        if url.path.contains("/timeshift/") { return false }
         if PlayerEngine.avBad.contains(url.absoluteString) { return false }
         if lastLive, let h = url.host, (PlayerEngine.avBadHosts[h] ?? 0) >= 2 { return false }
         return true
