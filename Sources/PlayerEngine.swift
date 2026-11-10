@@ -16,7 +16,10 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     let player = VLCMediaPlayer()
     let av = AVPlayer()
     /// VLC's stop / open can block for seconds on network streams: keep them off the main thread.
-    private let queue = DispatchQueue(label: "alfred.vlc", qos: .userInitiated)
+    /// Shared by every player (the channel-list preview too), so a stop always finishes
+    /// before the next stream opens.
+    private static let vlcQueue = DispatchQueue(label: "alfred.vlc", qos: .userInitiated)
+    private var queue: DispatchQueue { PlayerEngine.vlcQueue }
     @Published var playing = false
     @Published var buffering = false
     @Published var failed = false
@@ -49,8 +52,10 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     private var tokens: [NSObjectProtocol] = []
     private var watchdog: DispatchWorkItem?
     /// Links / servers Apple's player couldn't open (go straight to VLC next time).
-    private static var avBad = Set<String>()
+    /// Remembered between launches, so a channel that showed a black picture goes straight to VLC.
+    private static var avBad: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "avBadLinks") ?? [])
     private static var avBadHosts: [String: Int] = [:]
+    private var stallWork: DispatchWorkItem?
     private static let vlcOnlyExt: Set<String> = ["mkv", "avi", "wmv", "flv", "webm", "mpg", "mpeg", "vob", "divx", "xvid"]
 
     /// Settings for the subtitle size (VLC: a smaller number = bigger text).
@@ -73,6 +78,18 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
                 self.playing = p.timeControlStatus == .playing
                 self.buffering = p.timeControlStatus == .waitingToPlayAtSpecifiedRate
                 if self.playing { self.failed = false }
+                // Stuck loading for a long time: let VLC take over.
+                self.stallWork?.cancel()
+                if self.buffering && self.av.currentItem?.status == .readyToPlay {
+                    let url = self.lastURL
+                    let w = DispatchWorkItem { [weak self] in
+                        guard let self, self.usingAV, self.lastURL == url, !self.userPaused,
+                              self.av.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+                        self.avFailed(hostWide: false)
+                    }
+                    self.stallWork = w
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: w)
+                }
             }
         })
         avObs.append(av.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] p, _ in
@@ -87,7 +104,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
             DispatchQueue.main.async {
                 guard let self, self.usingAV else { return }
                 if st == .readyToPlay { self.avReady() }
-                if st == .failed { self.avFailed() }
+                if st == .failed { self.avFailed(hostWide: true) }
             }
         })
         avTimeObs = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
@@ -112,7 +129,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         })
         tokens.append(nc.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: nil, queue: .main) { [weak self] n in
             guard let self, (n.object as? AVPlayerItem) === self.av.currentItem else { return }
-            self.avFailed()
+            self.avFailed(hostWide: false)
         })
     }
 
@@ -160,29 +177,57 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     }
 
     private func playAV(_ url: URL) {
-        if !usingAV {
-            // One connection at a time: VLC lets go of its stream first.
-            let p = player
-            queue.async { if p.media != nil { p.stop() } }
-        }
+        let wasAV = usingAV
         usingAV = true
         activateAudio()
+        if wasAV {
+            openAV(url)
+            return
+        }
+        // One connection at a time: every VLC player (the preview too) lets go of its stream first.
+        let p = player
+        queue.async {
+            if p.media != nil { p.stop() }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.usingAV, self.lastURL == url else { return }
+                self.openAV(url)
+            }
+        }
+    }
+
+    private func openAV(_ url: URL) {
         let item = AVPlayerItem(url: avURL(url))
         if lastLive { item.preferredForwardBufferDuration = 4 }
         av.volume = Float(volume) / 100
         av.replaceCurrentItem(with: item)
         av.play()
-        // Not playing after a while: hand it to VLC.
+        // Check that a real picture is showing. Apple's player plays the sound of some channels
+        // (HEVC / MPEG-2 video) with a black picture: those go to VLC.
+        checkPicture(url, after: 4, tries: 3)
+    }
+
+    private func checkPicture(_ url: URL, after delay: Double, tries: Int) {
+        watchdog?.cancel()
         let w = DispatchWorkItem { [weak self] in
-            guard let self, self.usingAV, self.lastURL == url, self.av.currentItem?.status != .readyToPlay else { return }
-            self.avFailed()
+            guard let self, self.usingAV, self.lastURL == url, !self.external else { return }
+            let item = self.av.currentItem
+            if item?.status != .readyToPlay {
+                if tries > 1 { self.checkPicture(url, after: 2, tries: tries - 1) } else { self.avFailed(hostWide: true) }
+                return
+            }
+            let hasPicture = (item?.presentationSize.width ?? 0) > 0
+            if hasPicture { return }
+            if tries > 1 && self.av.timeControlStatus != .playing {
+                self.checkPicture(url, after: 2, tries: tries - 1)
+            } else {
+                self.avFailed(hostWide: false)
+            }
         }
         watchdog = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 9, execute: w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
     }
 
     private func avReady() {
-        watchdog?.cancel()
         failed = false
         if pendingFraction > 0, let d = av.currentItem?.duration.seconds, d.isFinite, d > 0 {
             av.seek(to: CMTime(seconds: d * pendingFraction, preferredTimescale: 600))
@@ -192,11 +237,13 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     }
 
     /// Apple's player couldn't play this one: VLC carries on from the same spot.
-    private func avFailed() {
+    private func avFailed(hostWide: Bool) {
         watchdog?.cancel()
+        stallWork?.cancel()
         guard usingAV, let url = lastURL else { return }
         PlayerEngine.avBad.insert(url.absoluteString)
-        if lastLive, let h = url.host { PlayerEngine.avBadHosts[h, default: 0] += 1 }
+        UserDefaults.standard.set(Array(PlayerEngine.avBad.prefix(3000)), forKey: "avBadLinks")
+        if hostWide, lastLive, let h = url.host { PlayerEngine.avBadHosts[h, default: 0] += 1 }
         let t = av.currentTime().seconds
         let d = av.currentItem?.duration.seconds ?? 0
         if !lastLive, t.isFinite, t > 1, d.isFinite, d > 0 { pendingFraction = t / d }
@@ -389,6 +436,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     func pictureInPictureControllerDidStopPictureInPicture(_ c: AVPictureInPictureController) {
         DispatchQueue.main.async {
             self.pipActive = false
+            if !self.userPaused { self.av.play() }
             self.keepPlaying()
         }
     }
@@ -404,7 +452,11 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
 
     func pictureInPictureController(_ c: AVPictureInPictureController,
                                     restoreUserInterfaceForPictureInPictureStopWithCompletionHandler done: @escaping (Bool) -> Void) {
-        done(true)
+        // Back to full screen: keep the video running so the picture comes straight back.
+        DispatchQueue.main.async {
+            if !self.userPaused { self.av.play() }
+            done(true)
+        }
     }
 
     // MARK: audio & subtitles (CC menu)
