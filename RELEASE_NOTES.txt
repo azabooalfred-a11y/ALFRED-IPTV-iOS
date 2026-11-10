@@ -1,4 +1,4 @@
-AirPlay: video now keeps playing when you pick a TV
-Picture-in-Picture fixed
+Picture-in-Picture now starts instantly and goes to the home screen
+AirPlay keeps playing when you pick a TV
 Audio & Subtitles menu (CC button): language, subtitles, size and delay
 TV Guide: full schedule grid from the Live TV screen

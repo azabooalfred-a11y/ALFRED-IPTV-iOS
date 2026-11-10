@@ -67,7 +67,7 @@ struct LiveView: View {
     @State private var askPin = false
     @State private var pendingCat: String?
     @State private var showGuide = false
-    @StateObject private var preview = PlayerEngine()
+    @StateObject private var preview = PlayerEngine(allowAV: false)
     @AppStorage("liveCatSort") private var catSort = 0
     @AppStorage("liveChSort") private var chSort = 0
 

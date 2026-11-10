@@ -78,7 +78,8 @@ struct PlayerView: View {
                     .ignoresSafeArea()
                     .opacity(engine.usingAV ? 0 : 1)
                 // Apple player, for Picture-in-Picture and AirPlay.
-                AVVideoView(engine: engine, gravity: avGravity)
+                AVVideoView(engine: engine)
+                    .scaleEffect(x: sc.width, y: sc.height)
                     .ignoresSafeArea()
                     .opacity(engine.usingAV ? 1 : 0.01)
                     .allowsHitTesting(false)
@@ -528,8 +529,7 @@ extension PlayerView {
             engine.stopPiP()
             return
         }
-        showToast("Starting Picture-in-Picture…")
-        Task { await engine.startPiP() }
+        engine.startPiP()
     }
 
     /// AirPlay TV picked / dropped: the video goes through Apple's player while a TV is in use.
