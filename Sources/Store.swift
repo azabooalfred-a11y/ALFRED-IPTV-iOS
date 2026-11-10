@@ -113,6 +113,7 @@ final class Store: ObservableObject {
         Xtream.clearCache()
         if fresh { Xtream.clearDisk() }
         EpgCache.shared.clear()
+        GuideCache.shared.clear()
         account = nil
         reloadToken = UUID()
     }

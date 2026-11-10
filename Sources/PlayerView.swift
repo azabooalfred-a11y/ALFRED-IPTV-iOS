@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import AVKit
+import Combine
 
 /// Something the player can play: a live channel, a movie or an episode.
 struct PlayItem: Identifiable {
@@ -43,6 +45,19 @@ struct PlayerView: View {
     @State private var showAspect = false
     /// Full-screen option: 0 Fit, 1 Fill screen, 2 Stretch, 3 16:9, 4 4:3 (remembered).
     @AppStorage("aspectMode") private var aspect = 0
+    /// CC menu (sample B): 0 main list, 1 audio, 2 subtitles, 3 subtitle size, 4 subtitle delay.
+    @State private var showTracks = false
+    @State private var trackPage = 0
+    @State private var audio: [TrackOption] = []
+    @State private var audioCur = -1
+    @State private var subs: [TrackOption] = []
+    @State private var subCur = -1
+    @State private var subDelay = 0.0
+    @State private var subSize = PlayerEngine.subSizeIndex
+    @State private var toast: String?
+    @State private var toastTask: Task<Void, Never>?
+    /// Name of the AirPlay TV in use ("" = none).
+    @State private var tvName = ""
     private static let aspectNames = ["Fit", "Fill screen", "Stretch", "16:9", "4:3"]
 
     init(request: PlayRequest) {
@@ -61,6 +76,14 @@ struct PlayerView: View {
                 VLCVideoView(engine: engine)
                     .scaleEffect(x: sc.width, y: sc.height)
                     .ignoresSafeArea()
+                    .opacity(engine.usingAV ? 0 : 1)
+                // Apple player, for Picture-in-Picture and AirPlay.
+                AVVideoView(engine: engine, gravity: avGravity)
+                    .ignoresSafeArea()
+                    .opacity(engine.usingAV ? 1 : 0.01)
+                    .allowsHitTesting(false)
+
+                if engine.external { onTV }
 
                 if engine.buffering && !engine.failed {
                     ProgressView().tint(.white).scaleEffect(1.5)
@@ -82,6 +105,21 @@ struct PlayerView: View {
                 .ignoresSafeArea()
 
                 if controls { overlay.transition(.opacity) }
+                if controls && showTracks { tracksPanel.transition(.opacity) }
+                if let toast {
+                    VStack {
+                        Text(toast)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                            .padding(.top, 70)
+                        Spacer()
+                    }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
                 if showList { channelList.transition(.move(edge: .trailing)) }
             }
         }
@@ -93,7 +131,10 @@ struct PlayerView: View {
             UIApplication.shared.isIdleTimerDisabled = true
             start()
             bumpHide()
+            routeChanged()
         }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+            .receive(on: RunLoop.main)) { _ in routeChanged() }
         .onDisappear {
             savePos()
             engine.stop()
@@ -141,9 +182,14 @@ struct PlayerView: View {
     private var overlay: some View {
         ZStack {
             VStack {
-                HStack {
+                HStack(spacing: 10) {
                     CircleButton(icon: "chevron.left") { dismiss() }
                     Spacer()
+                    CircleButton(icon: "captions.bubble", filled: showTracks) { openTracks() }
+                    AirPlayButton()
+                    if engine.pipSupported {
+                        CircleButton(icon: engine.pipActive ? "pip.exit" : "pip.enter", filled: engine.pipActive) { pipTapped() }
+                    }
                 }
                 Spacer()
             }
@@ -411,6 +457,11 @@ struct PlayerView: View {
     }
 
     private func toggleControls() {
+        if showTracks {
+            withAnimation { showTracks = false }
+            bumpHide()
+            return
+        }
         if showAspect {
             withAnimation { showAspect = false }
             bumpHide()
@@ -429,8 +480,236 @@ struct PlayerView: View {
         withAnimation { controls = true }
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if !Task.isCancelled && !showList && scrub == nil && !showAspect {
+            if !Task.isCancelled && !showList && scrub == nil && !showAspect && !showTracks {
                 withAnimation { controls = false }
+            }
+        }
+    }
+}
+
+// MARK: Picture-in-Picture, AirPlay, audio & subtitles
+
+extension PlayerView {
+    private var avGravity: AVLayerVideoGravity {
+        switch aspect {
+        case 1: return .resizeAspectFill
+        case 2: return .resize
+        default: return .resizeAspect
+        }
+    }
+
+    /// Shown on the phone while the video plays on the AirPlay TV.
+    private var onTV: some View {
+        ZStack {
+            AppBackground()
+            VStack(spacing: 10) {
+                Image(systemName: "airplayvideo")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 76, height: 76)
+                    .background(LinearGradient(colors: T.live, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .clipShape(Circle())
+                Text(tvName.isEmpty ? "Playing on your TV" : "Playing on \(tvName)")
+                    .font(.system(size: 18, weight: .black))
+                Text(item.title).font(.system(size: 13)).foregroundColor(T.dim)
+            }
+            .foregroundColor(.white)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func pipTapped() {
+        if engine.pipActive {
+            engine.leaveAV()
+            return
+        }
+        showToast("Starting Picture-in-Picture…")
+        Task {
+            let ok = await engine.startPiP()
+            await MainActor.run {
+                if !ok { showToast("This stream can't play in Picture-in-Picture") }
+            }
+        }
+    }
+
+    /// AirPlay TV picked / dropped: video goes through Apple's player while a TV is in use.
+    private func routeChanged() {
+        let tv = AVAudioSession.sharedInstance().currentRoute.outputs.first { $0.portType == .airPlay }
+        tvName = tv?.portName ?? ""
+        if tv != nil {
+            guard !engine.usingAV else { return }
+            Task {
+                let ok = await engine.startAV()
+                await MainActor.run {
+                    if !ok { showToast("This stream can only send sound to AirPlay") }
+                }
+            }
+        } else if engine.usingAV && !engine.pipActive {
+            engine.leaveAV()
+        }
+    }
+
+    private func showToast(_ text: String) {
+        toastTask?.cancel()
+        withAnimation { toast = text }
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { withAnimation { toast = nil } }
+        }
+    }
+
+    private func refreshTracks() {
+        let a = engine.audioTracks()
+        audio = a.list
+        audioCur = a.current
+        let s = engine.subtitleTracks()
+        subs = s.list
+        subCur = s.current
+        subDelay = engine.subDelay
+        subSize = PlayerEngine.subSizeIndex
+    }
+
+    private func openTracks() {
+        hideTask?.cancel()
+        showAspect = false
+        refreshTracks()
+        trackPage = 0
+        withAnimation(.easeOut(duration: 0.15)) { showTracks.toggle() }
+        if !showTracks { bumpHide() }
+    }
+
+    private func name(_ list: [TrackOption], _ id: Int, _ none: String) -> String {
+        list.first { $0.id == id }?.name ?? none
+    }
+
+    /// CC menu — sample B: Audio, Subtitles, Subtitle size, Subtitle delay.
+    private var tracksPanel: some View {
+        VStack {
+            HStack {
+                Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    switch trackPage {
+                    case 1:
+                        pageTitle("Audio")
+                        trackList(audio, audioCur, empty: "Only one audio track") { id in
+                            engine.setAudio(id)
+                            audioCur = id
+                        }
+                    case 2:
+                        pageTitle("Subtitles")
+                        trackList(subs, subCur, empty: "No subtitles in this video") { id in
+                            engine.setSubtitle(id)
+                            subCur = id
+                        }
+                    case 3:
+                        pageTitle("Subtitle size")
+                        trackList(PlayerEngine.subSizes.indices.map { TrackOption(id: $0, name: PlayerEngine.subSizes[$0].name) },
+                                  subSize, empty: "") { id in
+                            engine.setSubSize(id)
+                            subSize = id
+                        }
+                    case 4:
+                        pageTitle("Subtitle delay")
+                        HStack(spacing: 14) {
+                            CircleButton(icon: "minus", size: 38) { setDelay(subDelay - 0.5) }
+                            Text(String(format: "%+.1fs", subDelay))
+                                .font(.system(size: 17, weight: .heavy).monospacedDigit())
+                                .frame(minWidth: 70)
+                            CircleButton(icon: "plus", size: 38) { setDelay(subDelay + 0.5) }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        menuRow("Reset to 0.0s", "", on: false) { setDelay(0) }
+                    default:
+                        menuRow("Audio", name(audio, audioCur, "Default"), on: false) { trackPage = 1 }
+                        menuRow("Subtitles", name(subs, subCur, "Off"), on: subCur >= 0) { trackPage = 2 }
+                        if !engine.usingAV {
+                            menuRow("Subtitle size", PlayerEngine.subSizes[subSize].name, on: false) { trackPage = 3 }
+                            menuRow("Subtitle delay", String(format: "%.1fs", subDelay), on: false) { trackPage = 4 }
+                        }
+                    }
+                }
+                .foregroundColor(.white)
+                .padding(6)
+                .frame(width: 250)
+                .background(.ultraThinMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.12)))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            Spacer()
+        }
+        .padding(.top, 70)
+        .padding(.trailing, 24)
+    }
+
+    private func setDelay(_ v: Double) {
+        let d = (max(-30, min(30, v)) * 10).rounded() / 10
+        engine.subDelay = d
+        subDelay = d
+    }
+
+    private func pageTitle(_ t: String) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.12)) { trackPage = 0 }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left")
+                Text(t)
+                Spacer()
+            }
+            .font(.system(size: 14, weight: .heavy))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func menuRow(_ title: String, _ value: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.12)) { action() }
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value + (value.isEmpty ? "" : " ›"))
+                    .foregroundColor(on ? .white : Color(hex: 0xCFD6FF).opacity(0.8))
+                    .lineLimit(1)
+            }
+            .font(.system(size: 14))
+            .foregroundColor(.white)
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(on ? T.accent : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func trackList(_ list: [TrackOption], _ cur: Int, empty: String,
+                           pick: @escaping (Int) -> Void) -> some View {
+        Group {
+            if list.isEmpty {
+                Text(empty).font(.system(size: 13)).foregroundColor(T.dim).padding(12)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 2) {
+                        ForEach(list) { t in
+                            Button { pick(t.id) } label: {
+                                HStack {
+                                    Text(t.name).lineLimit(1)
+                                    Spacer()
+                                    if t.id == cur { Image(systemName: "checkmark") }
+                                }
+                                .font(.system(size: 14, weight: t.id == cur ? .bold : .regular))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12).padding(.vertical, 9)
+                                .background(t.id == cur ? T.accent : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 9))
+                                .contentShape(Rectangle())
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
             }
         }
     }

@@ -34,6 +34,8 @@ targets:
         UILaunchScreen:
           UIColorName: LaunchBg
         UIRequiresFullScreen: true
+        UIBackgroundModes:
+          - audio
         UIStatusBarStyle: UIStatusBarStyleLightContent
         ITSAppUsesNonExemptEncryption: false
         UISupportedInterfaceOrientations:

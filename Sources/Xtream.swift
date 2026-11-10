@@ -67,6 +67,7 @@ struct Program {
     let title: String
     let start: Date
     let end: Date
+    var desc: String = ""
 }
 
 struct XError: LocalizedError {
@@ -272,13 +273,40 @@ final class Xtream {
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let arr = o["epg_listings"] as? [[String: Any]] else { return [] }
         let now = Date()
-        return arr.compactMap { e -> Program? in
-            let raw = str(e["title"])
-            let title = Data(base64Encoded: raw).flatMap { String(data: $0, encoding: .utf8) } ?? raw
-            guard let s = Double(str(e["start_timestamp"])), let en = Double(str(e["stop_timestamp"])) else { return nil }
-            return Program(title: title, start: Date(timeIntervalSince1970: s), end: Date(timeIntervalSince1970: en))
+        return arr.compactMap(Xtream.program).filter { $0.end > now }
+    }
+
+    /// The whole guide for one channel (usually several days) for the TV Guide.
+    func fullEpg(_ c: Channel) async -> [Program] {
+        if p.isM3u { return [] }
+        var list: [Program] = []
+        if let data = try? await get(api("get_simple_data_table", "&stream_id=\(Xtream.enc(c.id))")),
+           let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let arr = o["epg_listings"] as? [[String: Any]] {
+            var seen = Set<Double>()
+            for e in arr {
+                guard let pr = Xtream.program(e), !seen.contains(pr.start.timeIntervalSince1970) else { continue }
+                seen.insert(pr.start.timeIntervalSince1970)
+                list.append(pr)
+            }
         }
-        .filter { $0.end > now }
+        if list.isEmpty {
+            let short = await shortEpg(c)
+            return short
+        }
+        return list.sorted { $0.start < $1.start }
+    }
+
+    /// Guide titles and descriptions come base64-encoded.
+    private static func text(_ v: Any?) -> String {
+        let raw = str(v)
+        return Data(base64Encoded: raw).flatMap { String(data: $0, encoding: .utf8) } ?? raw
+    }
+
+    static func program(_ e: [String: Any]) -> Program? {
+        guard let s = Double(str(e["start_timestamp"])), let en = Double(str(e["stop_timestamp"])), en > s else { return nil }
+        return Program(title: text(e["title"]), start: Date(timeIntervalSince1970: s),
+                       end: Date(timeIntervalSince1970: en), desc: text(e["description"]))
     }
 
     // MARK: movies & series
@@ -464,6 +492,26 @@ final class EpgCache {
         lock.lock(); let hit = map[ch.id]; lock.unlock()
         if let hit, hit.isEmpty || hit[0].end > Date() { return hit }
         let list = await api.shortEpg(ch)
+        if Task.isCancelled { return list }
+        lock.lock(); map[ch.id] = list; lock.unlock()
+        return list
+    }
+
+    func clear() {
+        lock.lock(); map.removeAll(); lock.unlock()
+    }
+}
+
+/// Full guide for the TV Guide, kept for the session.
+final class GuideCache {
+    static let shared = GuideCache()
+    private var map: [String: [Program]] = [:]
+    private let lock = NSLock()
+
+    func programs(_ api: Xtream, _ ch: Channel) async -> [Program] {
+        lock.lock(); let hit = map[ch.id]; lock.unlock()
+        if let hit { return hit }
+        let list = await api.fullEpg(ch)
         if Task.isCancelled { return list }
         lock.lock(); map[ch.id] = list; lock.unlock()
         return list

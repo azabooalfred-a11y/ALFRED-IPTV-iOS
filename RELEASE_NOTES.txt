@@ -1,1 +1,4 @@
-Press and hold a category to move it (Live, Movies, Series)
+Picture-in-Picture: keep watching in a small window over other apps
+AirPlay: send the video to your Apple TV or AirPlay TV
+Audio & Subtitles menu (CC button): language, subtitles, size and delay
+TV Guide: full schedule grid from the Live TV screen

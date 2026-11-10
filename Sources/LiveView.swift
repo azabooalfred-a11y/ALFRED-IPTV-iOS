@@ -66,6 +66,7 @@ struct LiveView: View {
     @State private var isLand = false
     @State private var askPin = false
     @State private var pendingCat: String?
+    @State private var showGuide = false
     @StateObject private var preview = PlayerEngine()
     @AppStorage("liveCatSort") private var catSort = 0
     @AppStorage("liveChSort") private var chSort = 0
@@ -98,6 +99,14 @@ struct LiveView: View {
     }
 
     private func filtered() -> [Channel] {
+        var l = channels(in: cat)
+        let q = qCh.trimmed
+        if !q.isEmpty { l = l.filter { $0.name.localizedCaseInsensitiveContains(q) } }
+        return l
+    }
+
+    /// Channels of one category, in the order shown (also used by the TV Guide).
+    private func channels(in cat: String) -> [Channel] {
         let hid = store.hiddenSet("live")
         let lock = store.parentalOn && !store.unlocked ? store.lockedSet("live") : []
         let visible = chans.filter { !hid.contains($0.categoryId) && !lock.contains($0.categoryId) }
@@ -111,8 +120,6 @@ struct LiveView: View {
         default: l = chans.filter { $0.categoryId == cat }
         }
         if cat != "recent" { l = Sorts.chans(l, chSort) }
-        let q = qCh.trimmed
-        if !q.isEmpty { l = l.filter { $0.name.localizedCaseInsensitiveContains(q) } }
         return l
     }
 
@@ -160,6 +167,14 @@ struct LiveView: View {
             PlayerView(request: r).environmentObject(store)
         }
         .pinPrompt($askPin) { if let c = pendingCat { cat = c } }
+        .fullScreenCover(isPresented: $showGuide, onDismiss: {
+            if isLand, let s = selected { preview.play(store.api?.liveURL(s)) }
+        }) {
+            GuideView(categories: allCats.filter { !store.isLocked("live", $0.id) },
+                      start: store.isLocked("live", cat) ? "all" : cat,
+                      channelsFor: { channels(in: $0) })
+                .environmentObject(store)
+        }
     }
 
     private var header: some View {
@@ -170,6 +185,22 @@ struct LiveView: View {
             Spacer(minLength: 6)
             LiveTitle()
             Spacer(minLength: 6)
+            Button {
+                preview.stop()
+                showGuide = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                    Text(isLand ? "TV Guide" : "Guide")
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(T.glass)
+                .overlay(Capsule().stroke(Color.white.opacity(0.15)))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(Press())
             Clock(size: 16).lineLimit(1).fixedSize()
         }
         .padding(.top, 4)
