@@ -31,7 +31,16 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     @Published var pipActive = false
     /// true while the video is showing on an AirPlay TV.
     @Published var external = false
+    /// A short message for the player to show (why AirPlay / Picture-in-Picture couldn't start).
+    @Published var notice: String?
     private var volume: Int32 = 100
+    /// What needs Apple's player right now.
+    private var wantPiP = false
+    private var wantAirPlay = false
+    /// A hand-over is running (don't start another one).
+    private var switching = false
+    /// Link that already failed in Apple's player (AirPlay doesn't retry it on every route change).
+    private var avFailedURL: URL?
     /// Resume point (0...1) applied once the length is known.
     var pendingFraction: Double = 0
     private var lastURL: URL?
@@ -62,6 +71,17 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         avObs.append(av.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] p, _ in
             DispatchQueue.main.async { self?.external = p.isExternalPlaybackActive }
         })
+        // The stream broke in Apple's player: go back to VLC so the picture never just stops.
+        avObs.append(av.observe(\.currentItem?.status, options: [.new]) { [weak self] p, _ in
+            guard p.currentItem?.status == .failed else { return }
+            DispatchQueue.main.async {
+                guard let self, self.usingAV, !self.switching else { return }
+                self.avFailedURL = self.lastURL
+                self.wantPiP = false
+                self.notice = "Apple's player couldn't keep playing this stream"
+                self.leaveAV()
+            }
+        })
         avTimeObs = av.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
                                                queue: .main) { [weak self] t in
             guard let self, self.usingAV, let item = self.av.currentItem else { return }
@@ -91,16 +111,9 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         time = 0
         length = 0
         if usingAV {
-            // Already on AirPlay / Picture-in-Picture: keep the new channel there too.
-            Task {
-                let ok = await self.startAV()
-                if !ok {
-                    await MainActor.run {
-                        self.dropAV()
-                        self.playVLC(url, live: live)
-                    }
-                }
-            }
+            // Already on AirPlay / Picture-in-Picture: keep the new channel there too
+            // (startAV falls back to VLC by itself if this one can't play there).
+            Task { _ = await self.startAV() }
             return
         }
         playVLC(url, live: live)
@@ -126,6 +139,8 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     func stop() {
         playing = false
         buffering = false
+        wantPiP = false
+        wantAirPlay = false
         pip?.stopPictureInPicture()
         dropAV()
         let p = player
@@ -176,55 +191,114 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         return u.deletingPathExtension().appendingPathExtension("m3u8")
     }
 
-    /// Moves playback to the Apple player at the same spot. false when this stream can't play there.
+    /// VLC can switch the audio session off when it stops; Apple's player, Picture-in-Picture
+    /// and AirPlay need it on.
+    private func activateAudio() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+    }
+
+    /// Stops VLC and waits until it has really let go of the stream
+    /// (most providers allow only one connection at a time).
+    private func stopVLCAndWait() async {
+        let p = player
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            queue.async {
+                if p.media != nil { p.stop() }
+                c.resume()
+            }
+        }
+    }
+
+    /// Moves playback to the Apple player at the same spot.
+    /// If the stream can't play there, VLC carries on from the same spot and false comes back.
     func startAV() async -> Bool {
         guard let url = lastURL else { return false }
+        let busy = await MainActor.run { () -> Bool in
+            if self.switching { return true }
+            self.switching = true
+            return false
+        }
+        if busy { return false }
         let wasAV = usingAV
-        let resumeMs = (!lastLive && !wasAV) ? Double(time) : 0
-        let asset = AVURLAsset(url: avURL(url), options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": Xtream.userAgent]])
-        let item = AVPlayerItem(asset: asset)
+        let live = lastLive
+        let lenMs = Double(length)
+        let resumeMs = (!live && !wasAV) ? Double(time) : 0
+        let resumeFraction = pendingFraction
+
+        // Close VLC's connection first so the provider doesn't refuse (or cut) the new one.
+        await MainActor.run {
+            self.usingAV = true
+            self.buffering = true
+        }
+        if !wasAV {
+            await stopVLCAndWait()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        await MainActor.run { self.activateAudio() }
+
+        let item = AVPlayerItem(url: avURL(url))
+        item.preferredForwardBufferDuration = live ? 4 : 0
         av.replaceCurrentItem(with: item)
+        av.play()
         var waited = 0
-        while item.status == .unknown && waited < 60 {
+        while item.status == .unknown && waited < 75 {
             try? await Task.sleep(nanoseconds: 200_000_000)
             waited += 1
         }
-        guard item.status == .readyToPlay else {
-            if !wasAV { av.replaceCurrentItem(with: nil) }
+
+        guard item.status == .readyToPlay, lastURL == url else {
+            let stillCurrent = lastURL == url
+            await MainActor.run {
+                self.av.pause()
+                self.av.replaceCurrentItem(with: nil)
+                self.usingAV = false
+                self.external = false
+                self.switching = false
+                if stillCurrent {
+                    self.avFailedURL = url
+                    // Carry on in VLC from the same spot.
+                    if resumeMs > 0, lenMs > 0 { self.pendingFraction = resumeMs / lenMs } else { self.pendingFraction = resumeFraction }
+                    self.buffering = true
+                    self.playVLC(url, live: live)
+                    self.syncAfterChange()
+                } else {
+                    // The channel changed while this one was loading: hand over the new one.
+                    Task { _ = await self.startAV() }
+                }
+            }
             return false
         }
+
         var target = resumeMs / 1000
         let d = item.duration.seconds
-        if target <= 1, pendingFraction > 0, d.isFinite, d > 0 {
-            target = d * pendingFraction
-        }
+        if target <= 1, resumeFraction > 0, d.isFinite, d > 0 { target = d * resumeFraction }
         if target > 1 {
             _ = await av.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
         await MainActor.run {
-            if !self.usingAV {
-                let p = self.player
-                self.queue.async { if p.media != nil { p.stop() } }
-            }
             self.pendingFraction = 0
-            self.usingAV = true
+            self.avFailedURL = nil
             self.failed = false
-            self.buffering = false
             self.av.volume = Float(self.volume) / 100
             self.av.play()
+            self.switching = false
+            self.syncAfterChange()
         }
         return true
     }
 
     /// Back to VLC (after Picture-in-Picture or AirPlay ends) at the same spot.
     func leaveAV() {
-        guard usingAV else { return }
+        guard usingAV, !switching else { return }
         let t = av.currentTime().seconds
         let d = av.currentItem?.duration.seconds ?? 0
         dropAV()
         guard let url = lastURL else { return }
         if !lastLive, t.isFinite, d.isFinite, d > 0 { pendingFraction = t / d }
         buffering = true
+        activateAudio()
         playVLC(url, live: lastLive)
     }
 
@@ -233,6 +307,36 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         av.replaceCurrentItem(with: nil)
         usingAV = false
         external = false
+    }
+
+    /// A wish changed while a hand-over was running: settle on the right player now.
+    private func syncAfterChange() {
+        let need = wantPiP || wantAirPlay
+        if need && !usingAV && avFailedURL != lastURL {
+            Task { _ = await self.startAV() }
+        } else if !need && usingAV && !pipActive {
+            leaveAV()
+        }
+    }
+
+    /// AirPlay TV picked (true) or dropped (false).
+    func airPlayChanged(_ on: Bool) {
+        guard on != wantAirPlay else { return }
+        wantAirPlay = on
+        if on {
+            avFailedURL = nil
+            guard !usingAV, !switching else { return }
+            Task {
+                let ok = await self.startAV()
+                if !ok {
+                    await MainActor.run {
+                        self.notice = "This channel can only send sound to AirPlay"
+                    }
+                }
+            }
+        } else if usingAV && !wantPiP && !pipActive && !switching {
+            leaveAV()
+        }
     }
 
     var pipSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
@@ -245,20 +349,50 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         pip = c
     }
 
-    /// Picture-in-Picture button. false when this stream can't play in Picture-in-Picture.
-    func startPiP() async -> Bool {
-        if !usingAV {
-            guard await startAV() else { return false }
+    /// Picture-in-Picture button.
+    func startPiP() async {
+        guard let pip else {
+            await MainActor.run { self.notice = "Picture-in-Picture isn't available on this device" }
+            return
         }
-        guard let pip else { return false }
+        await MainActor.run {
+            self.wantPiP = true
+            self.avFailedURL = nil
+        }
+        if !usingAV || switching {
+            if switching {
+                var w = 0
+                while switching && w < 100 { try? await Task.sleep(nanoseconds: 150_000_000); w += 1 }
+            }
+            if !usingAV {
+                guard await startAV() else {
+                    await MainActor.run {
+                        self.wantPiP = false
+                        self.notice = "This stream can't play in Picture-in-Picture"
+                    }
+                    return
+                }
+            }
+        }
         var waited = 0
-        while !pip.isPictureInPicturePossible && waited < 25 {
-            try? await Task.sleep(nanoseconds: 200_000_000)
+        while !pip.isPictureInPicturePossible && waited < 40 {
+            try? await Task.sleep(nanoseconds: 150_000_000)
             waited += 1
         }
-        guard pip.isPictureInPicturePossible else { return false }
-        await MainActor.run { pip.startPictureInPicture() }
-        return true
+        await MainActor.run {
+            if pip.isPictureInPicturePossible {
+                pip.startPictureInPicture()
+            } else {
+                self.wantPiP = false
+                self.notice = "Picture-in-Picture couldn't start. Try again in a moment"
+                self.syncAfterChange()
+            }
+        }
+    }
+
+    func stopPiP() {
+        wantPiP = false
+        if pipActive { pip?.stopPictureInPicture() } else { syncAfterChange() }
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ c: AVPictureInPictureController) {
@@ -268,13 +402,19 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     func pictureInPictureControllerDidStopPictureInPicture(_ c: AVPictureInPictureController) {
         DispatchQueue.main.async {
             self.pipActive = false
-            if !self.external { self.leaveAV() }
+            self.wantPiP = false
+            if !self.wantAirPlay && !self.external { self.leaveAV() }
         }
     }
 
     func pictureInPictureController(_ c: AVPictureInPictureController,
                                     failedToStartPictureInPictureWithError error: Error) {
-        DispatchQueue.main.async { self.pipActive = false }
+        DispatchQueue.main.async {
+            self.pipActive = false
+            self.wantPiP = false
+            self.notice = "Picture-in-Picture couldn't start: " + error.localizedDescription
+            self.syncAfterChange()
+        }
     }
 
     func pictureInPictureController(_ c: AVPictureInPictureController,

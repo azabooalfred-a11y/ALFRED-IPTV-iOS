@@ -135,6 +135,11 @@ struct PlayerView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
             .receive(on: RunLoop.main)) { _ in routeChanged() }
+        .onChange(of: engine.notice) { n in
+            guard let n else { return }
+            showToast(n)
+            engine.notice = nil
+        }
         .onDisappear {
             savePos()
             engine.stop()
@@ -520,33 +525,18 @@ extension PlayerView {
 
     private func pipTapped() {
         if engine.pipActive {
-            engine.leaveAV()
+            engine.stopPiP()
             return
         }
         showToast("Starting Picture-in-Picture…")
-        Task {
-            let ok = await engine.startPiP()
-            await MainActor.run {
-                if !ok { showToast("This stream can't play in Picture-in-Picture") }
-            }
-        }
+        Task { await engine.startPiP() }
     }
 
-    /// AirPlay TV picked / dropped: video goes through Apple's player while a TV is in use.
+    /// AirPlay TV picked / dropped: the video goes through Apple's player while a TV is in use.
     private func routeChanged() {
         let tv = AVAudioSession.sharedInstance().currentRoute.outputs.first { $0.portType == .airPlay }
         tvName = tv?.portName ?? ""
-        if tv != nil {
-            guard !engine.usingAV else { return }
-            Task {
-                let ok = await engine.startAV()
-                await MainActor.run {
-                    if !ok { showToast("This stream can only send sound to AirPlay") }
-                }
-            }
-        } else if engine.usingAV && !engine.pipActive {
-            engine.leaveAV()
-        }
+        engine.airPlayChanged(tv != nil)
     }
 
     private func showToast(_ text: String) {

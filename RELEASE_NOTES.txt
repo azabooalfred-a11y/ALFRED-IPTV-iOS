@@ -1,4 +1,4 @@
-Picture-in-Picture: keep watching in a small window over other apps
-AirPlay: send the video to your Apple TV or AirPlay TV
+AirPlay: video now keeps playing when you pick a TV
+Picture-in-Picture fixed
 Audio & Subtitles menu (CC button): language, subtitles, size and delay
 TV Guide: full schedule grid from the Live TV screen
