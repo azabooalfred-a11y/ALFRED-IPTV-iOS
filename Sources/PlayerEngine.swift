@@ -47,6 +47,8 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     /// Live preview in the channel list: VLC only (its picture view is VLC's).
     private let allowAV: Bool
     private var pip: AVPictureInPictureController?
+    private weak var playerLayer: AVPlayerLayer?
+    private var pipStarting = false
     /// PiP was started with the button: send the app to the iPhone home screen once it's floating.
     private var pipToHome = false
     private var avObs: [NSKeyValueObservation] = []
@@ -128,6 +130,19 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         tokens.append(nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
             let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             if raw == AVAudioSession.InterruptionType.ended.rawValue { self?.keepPlaying() }
+        })
+        // Phone locked (no Picture-in-Picture): Apple's player would pause with its picture attached,
+        // so let go of the picture and keep the sound playing for the Lock Screen controls.
+        tokens.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                guard let self, self.usingAV, !self.pipActive, !self.pipStarting else { return }
+                self.playerLayer?.player = nil
+                if !self.userPaused { self.av.play() }
+            }
+        })
+        tokens.append(nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, let layer = self.playerLayer, layer.player == nil else { return }
+            layer.player = self.av
         })
         tokens.append(nc.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: nil, queue: .main) { [weak self] n in
             guard let self, (n.object as? AVPlayerItem) === self.av.currentItem else { return }
@@ -382,6 +397,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
     var pipSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
 
     func attachPiP(_ layer: AVPlayerLayer) {
+        playerLayer = layer
         guard pip == nil, pipSupported else { return }
         let c = AVPictureInPictureController(playerLayer: layer)
         c?.delegate = self
@@ -428,7 +444,12 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         pip?.stopPictureInPicture()
     }
 
+    func pictureInPictureControllerWillStartPictureInPicture(_ c: AVPictureInPictureController) {
+        pipStarting = true
+    }
+
     func pictureInPictureControllerDidStartPictureInPicture(_ c: AVPictureInPictureController) {
+        pipStarting = false
         DispatchQueue.main.async {
             self.pipActive = true
             guard self.pipToHome else { return }
@@ -452,6 +473,7 @@ final class PlayerEngine: NSObject, ObservableObject, VLCMediaPlayerDelegate, AV
         DispatchQueue.main.async {
             self.pipActive = false
             self.pipToHome = false
+            self.pipStarting = false
             self.notice = "Picture-in-Picture couldn't start: " + error.localizedDescription
         }
     }

@@ -1,4 +1,2 @@
-Channels start much faster (no more black screen wait)
-Smoother return from Picture-in-Picture to full screen
-Rewind live TV, swipe left / right to change channel
-Search Everything from the home page
+Lock Screen and Control Center controls: pause and change channel without unlocking
+Sound keeps playing when you lock the phone

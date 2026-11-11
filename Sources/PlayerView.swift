@@ -143,7 +143,10 @@ struct PlayerView: View {
             start()
             bumpHide()
             routeChanged()
+            setupRemote()
         }
+        .onChange(of: engine.playing) { _ in updateNowPlaying() }
+        .onChange(of: engine.length) { _ in updateNowPlaying() }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
             .receive(on: RunLoop.main)) { _ in routeChanged() }
         .onChange(of: engine.notice) { n in
@@ -153,6 +156,7 @@ struct PlayerView: View {
         }
         .onDisappear {
             savePos()
+            NowPlaying.shared.stop()
             engine.stop()
             hideTask?.cancel()
             UIApplication.shared.isIdleTimerDisabled = false
@@ -470,6 +474,7 @@ struct PlayerView: View {
         engine.play(item.url, live: live, hint: item.title)
         now = ""
         next = ""
+        updateNowPlaying()
         guard live, let c = item.channel else { return }
         store.addHistory("live", c.id)
         Task {
@@ -478,6 +483,7 @@ struct PlayerView: View {
             if c.id == item.channel?.id {
                 now = p.first?.title ?? ""
                 next = p.count > 1 ? p[1].title : ""
+                updateNowPlaying()
             }
         }
     }
@@ -550,6 +556,33 @@ extension PlayerView {
             .foregroundColor(.white)
         }
         .allowsHitTesting(false)
+    }
+
+    // MARK: Lock Screen & Control Center (13A)
+
+    private func setupRemote() {
+        let np = NowPlaying.shared
+        np.onPlay = { if !engine.playing { engine.toggle() } }
+        np.onPause = { if engine.playing { engine.toggle() } }
+        np.onToggle = { engine.toggle() }
+        np.onNext = { change(1) }
+        np.onPrev = { change(-1) }
+        np.onSkip = { engine.jump(Int32($0)) }
+        np.start(next: list.count > 1, skip: !live)
+        updateNowPlaying()
+    }
+
+    private func updateNowPlaying() {
+        let sub: String
+        if live {
+            sub = now.isEmpty ? "Live" : (next.isEmpty ? now : "\(now) · Next: \(next)")
+        } else {
+            sub = list.count > 1 ? "\(index + 1) of \(list.count)" : "Movie"
+        }
+        NowPlaying.shared.update(title: live ? "\(item.num) · \(item.title)" : item.title,
+                                 subtitle: sub, live: live, playing: engine.playing || engine.buffering,
+                                 elapsed: Double(engine.time) / 1000, duration: Double(engine.length) / 1000,
+                                 artwork: item.icon)
     }
 
     // MARK: swipe to change channel (10A)
